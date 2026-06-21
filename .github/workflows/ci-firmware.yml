@@ -6,7 +6,7 @@ name: CI — Firmware
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master, main, develop]
     paths:
       - "firmware/**"
       - ".github/workflows/ci-firmware.yml"

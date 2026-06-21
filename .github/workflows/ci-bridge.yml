@@ -2,7 +2,7 @@ name: CI — Bridge
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master, main, develop]
     paths:
       - "bridge/**"
       - ".github/workflows/ci-bridge.yml"
