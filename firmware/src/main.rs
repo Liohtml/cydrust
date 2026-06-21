@@ -46,6 +46,16 @@ mod icons;
 mod ota;
 #[cfg(all(feature = "ble", not(feature = "wifi")))]
 mod ble;
+// e-ink variant: monochrome e-paper DISPLAY half (USB transport unchanged).
+// Selected INSTEAD of the colour-LCD path; see the cfg-gating in run().
+#[cfg(feature = "eink")]
+mod eink;
+
+// The e-ink display path replaces the colour LCD; it has no WiFi/HTTP display
+// loop, so it is only meaningful for the USB (non-wifi) transport. Reject the
+// nonsensical combo at compile time rather than silently miscompiling.
+#[cfg(all(feature = "eink", feature = "wifi"))]
+compile_error!("`eink` is a USB-transport display variant and is mutually exclusive with `wifi`");
 
 // ── Data model ───────────────────────────────────────────────────────────────
 
@@ -1015,47 +1025,61 @@ fn run() -> Result<()> {
     #[cfg(feature = "wifi")] let sysloop = EspSystemEventLoop::take()?;
 
     // NVS — shared partition for settings (and WiFi in the wifi build).
+    // (The e-ink variant doesn't use brightness/sleep/theme, but loading is
+    // harmless and keeps the path identical up to the display split.)
     let nvs_part = EspDefaultNvsPartition::take()?;
+    #[cfg_attr(feature = "eink", allow(unused_mut, unused_variables))]
     let mut nvs: EspNvs<NvsDefault> = EspNvs::new(nvs_part.clone(), "vibe_set", true)?;
+    #[cfg_attr(feature = "eink", allow(unused_mut, unused_variables))]
     let mut settings = settings_load(&nvs);
 
-    // Backlight on GPIO21 via LEDC PWM (5 kHz, 8-bit) so brightness is adjustable.
-    let bl_timer = LedcTimerDriver::new(
-        peripherals.ledc.timer0,
-        &TimerConfig::new().frequency(5.kHz().into()).resolution(Resolution::Bits8),
-    )?;
-    let mut bl = LedcDriver::new(peripherals.ledc.channel0, &bl_timer, peripherals.pins.gpio21)?;
-    set_brightness(&mut bl, settings.brightness);
+    // ── Display half: COLOUR LCD path ───────────────────────────────────────────
+    // Compiled only when the e-ink variant is NOT selected. The e-ink build
+    // skips the ST7789 / backlight / XPT2046 init entirely and hands the
+    // remaining `peripherals` to `eink::run` after the transport starts, so the
+    // colour-LCD GPIOs/SPI2 are never claimed in that build.
+    #[cfg(not(feature = "eink"))]
+    let (mut bl, mut display, mut t_cs, mut t_clk, mut t_mosi, t_miso) = {
+        // Backlight on GPIO21 via LEDC PWM (5 kHz, 8-bit) so brightness is adjustable.
+        let bl_timer = LedcTimerDriver::new(
+            peripherals.ledc.timer0,
+            &TimerConfig::new().frequency(5.kHz().into()).resolution(Resolution::Bits8),
+        )?;
+        let mut bl = LedcDriver::new(peripherals.ledc.channel0, &bl_timer, peripherals.pins.gpio21)?;
+        set_brightness(&mut bl, settings.brightness);
 
-    let spi = SpiDriver::new(
-        peripherals.spi2,
-        peripherals.pins.gpio14,
-        peripherals.pins.gpio13,
-        None::<esp_idf_hal::gpio::AnyInputPin>,
-        &esp_idf_hal::spi::config::DriverConfig::new(),
-    )?;
-    let spi_device = SpiDeviceDriver::new(
-        spi, Some(peripherals.pins.gpio15),
-        &SpiConfig::new().baudrate(55.MHz().into()),
-    )?;
-    let dc = PinDriver::output(peripherals.pins.gpio2)?;
-    let di = SPIInterface::new(spi_device, dc);
-    let mut display = Builder::new(ST7789, di)
-        .display_size(240, 320)
-        .invert_colors(ColorInversion::Normal)   // reference: -DTFT_INVERSION_OFF=1
-        .color_order(ColorOrder::Bgr)             // reference: -DTFT_RGB_ORDER=TFT_BGR
-        .orientation(Orientation::new().rotate(Rotation::Deg90))
-        .init(&mut FreeRtos)
-        .map_err(|_| anyhow::anyhow!("display init failed"))?;
-    display.clear(Rgb565::BLACK).map_err(|_| anyhow::anyhow!("clear failed"))?;
+        let spi = SpiDriver::new(
+            peripherals.spi2,
+            peripherals.pins.gpio14,
+            peripherals.pins.gpio13,
+            None::<esp_idf_hal::gpio::AnyInputPin>,
+            &esp_idf_hal::spi::config::DriverConfig::new(),
+        )?;
+        let spi_device = SpiDeviceDriver::new(
+            spi, Some(peripherals.pins.gpio15),
+            &SpiConfig::new().baudrate(55.MHz().into()),
+        )?;
+        let dc = PinDriver::output(peripherals.pins.gpio2)?;
+        let di = SPIInterface::new(spi_device, dc);
+        let mut display = Builder::new(ST7789, di)
+            .display_size(240, 320)
+            .invert_colors(ColorInversion::Normal)   // reference: -DTFT_INVERSION_OFF=1
+            .color_order(ColorOrder::Bgr)             // reference: -DTFT_RGB_ORDER=TFT_BGR
+            .orientation(Orientation::new().rotate(Rotation::Deg90))
+            .init(&mut FreeRtos)
+            .map_err(|_| anyhow::anyhow!("display init failed"))?;
+        display.clear(Rgb565::BLACK).map_err(|_| anyhow::anyhow!("clear failed"))?;
 
-    // Touch (XPT2046 bit-bang)
-    let mut t_cs   = PinDriver::output(peripherals.pins.gpio33)?;
-    let mut t_clk  = PinDriver::output(peripherals.pins.gpio25)?;
-    let mut t_mosi = PinDriver::output(peripherals.pins.gpio32)?;
-    let t_miso     = PinDriver::input(peripherals.pins.gpio39)?;
-    let _t_irq     = PinDriver::input(peripherals.pins.gpio36)?;
-    t_cs.set_high()?; t_clk.set_low()?; t_mosi.set_low()?;
+        // Touch (XPT2046 bit-bang)
+        let mut t_cs   = PinDriver::output(peripherals.pins.gpio33)?;
+        let mut t_clk  = PinDriver::output(peripherals.pins.gpio25)?;
+        let mut t_mosi = PinDriver::output(peripherals.pins.gpio32)?;
+        let t_miso     = PinDriver::input(peripherals.pins.gpio39)?;
+        let _t_irq     = PinDriver::input(peripherals.pins.gpio36)?;
+        t_cs.set_high()?; t_clk.set_low()?; t_mosi.set_low()?;
+
+        (bl, display, t_cs, t_clk, t_mosi, t_miso)
+    };
 
     // ── WiFi transport ────────────────────────────────────────────────────────
     #[cfg(feature = "wifi")]
@@ -1233,6 +1257,20 @@ fn run() -> Result<()> {
             ble::start(shared.clone());
         }
 
+        // ── Display half: E-INK path ────────────────────────────────────────────
+        // The transport (above) already feeds `shared`; hand the still-untouched
+        // `peripherals` to the e-paper run loop, which owns the DISPLAY half from
+        // here. It never returns. The colour render loop below is cfg-excluded in
+        // this build, so exactly one display path compiles.
+        #[cfg(feature = "eink")]
+        {
+            let _ = &mut settings;   // settings unused on the e-ink path
+            return eink::run(peripherals, shared);
+        }
+
+        // ── Display half: COLOUR LCD render loop ─────────────────────────────────
+        #[cfg(not(feature = "eink"))]
+        {
         let mut active_tab  = Tab::Sessions;
         let mut view        = View::List;
         let mut was_touched = false;
@@ -1314,5 +1352,6 @@ fn run() -> Result<()> {
             }
             FreeRtos::delay_ms(50);
         }
+        } // end colour-LCD render loop block (cfg(not(eink)))
     }
 }

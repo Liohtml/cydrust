@@ -20,6 +20,16 @@ ota = ["wifi"]
 # Build: $env:ESP_IDF_SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.defaults.ble'
 #        cargo +esp build --features ble
 ble = ["dep:esp32-nimble"]
+# e-ink variant: drive a low-power monochrome SPI e-paper panel (Waveshare
+# 2.9"/2.13" B/W, SSD1680/IL3820) INSTEAD of the colour ST7789 LCD. This is a
+# separate, simplified, glanceable status view (not the tabbed colour UI) that
+# full-refreshes slowly to honour e-paper longevity + low power. The USB stdin
+# transport is shared; only the DISPLAY half changes. Mutually exclusive with
+# the colour-LCD path via the cfg-selection in main.rs. The default (no-feature)
+# build is unaffected — no eink symbols compile.
+# epd-waveshare 0.6 targets embedded-hal 1.0 — matches our `embedded-hal = "1"`.
+# Build: $env:CARGO_TARGET_DIR='C:\t'; cargo +esp build --features eink
+eink = ["dep:epd-waveshare"]
 
 [[bin]]
 name = "vibe-firmware"
@@ -49,9 +59,28 @@ heapless = "0.8"
 log = "0.4"
 anyhow = { version = "1", features = ["std"] }
 # BLE GATT server (NimBLE). Optional — only pulled in by the `ble` feature.
-# 0.9.x pins esp-idf-svc ^0.50.1, matching our esp-idf-svc 0.50 (0.10+ requires
-# esp-idf-svc 0.51+). NimBLE adds significant flash; see sdkconfig.defaults.ble.
+#
+# Version pin is a known tension (see sdkconfig.defaults.ble / module docs):
+#   • 0.9.0 / 0.10.x accept esp-idf-svc ^0.50 (our pin) but declare the
+#     now-removed `#![feature(inline_const_pat)]`, so they FAIL to compile on
+#     the current esp nightly (rustc 1.95) with "const blocks cannot be used as
+#     patterns".
+#   • 0.11.1+ removed that feature and compile cleanly, but require
+#     esp-idf-svc ^0.51. Bumping esp-idf-svc to 0.51 regressed the DEFAULT
+#     (non-ble) build with an embassy-executor `__pender` link error, which the
+#     project's hard "default build unchanged" rule forbids.
+# We therefore pin 0.9 to keep esp-idf-svc at 0.50 and the default build safe.
+# The BLE source is written against this crate's (stable) public API; to build
+# it, use an esp toolchain whose rustc still supports inline_const_pat, OR bump
+# the firmware to esp-idf-svc 0.51 + esp32-nimble 0.11.1 once the executor
+# integration is resolved. See the build notes in sdkconfig.defaults.ble.
 esp32-nimble = { version = "0.9", optional = true }
+# e-paper driver (optional — only pulled in by the `eink` feature).
+# 0.6 uses embedded-hal 1.0 (SpiDevice/OutputPin/InputPin/DelayNs), which is the
+# same major as our `embedded-hal = "1"`, so the esp-idf-hal SpiDeviceDriver /
+# PinDriver / Delay implementations satisfy its bounds directly. Supports the
+# common Waveshare B/W panels (2.9" SSD1680/IL3820, 2.13", 1.54", etc.).
+epd-waveshare = { version = "0.6", optional = true }
 
 [build-dependencies]
 embuild = { version = "0.32", features = ["espidf"] }

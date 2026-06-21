@@ -1,8 +1,23 @@
 # Extra sdkconfig layer for the BLE build ONLY.
 #
-# Layer this ON TOP of sdkconfig.defaults — do not use it alone:
-#   $env:ESP_IDF_SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.defaults.ble'
+# Layer this ON TOP of sdkconfig.defaults — do not use it alone. NOTE: with the
+# embuild/esp-idf-sys in this project, ESP_IDF_SDKCONFIG_DEFAULTS entries must be
+# ABSOLUTE paths — relative paths are silently dropped and the BT options never
+# reach the IDF build (you'll get "ble_gap_conn_find not found in esp_idf_sys",
+# i.e. NimBLE headers were never compiled). In PowerShell:
+#
+#   $b = (Resolve-Path 'sdkconfig.defaults').Path
+#   $l = (Resolve-Path 'sdkconfig.defaults.ble').Path
+#   $env:ESP_IDF_SDKCONFIG_DEFAULTS = "$b;$l"
+#   cargo +esp clean -p esp-idf-sys   # force the IDF reconfigure to pick it up
 #   cargo +esp build --features ble
+#
+# Verify it applied by grepping the merged sdkconfig for CONFIG_BT_NIMBLE_ENABLED:
+#   C:\t\xtensa-esp32-espidf\debug\build\esp-idf-sys-*\out\sdkconfig
+#
+# TOOLCHAIN CAVEAT: esp32-nimble 0.9/0.10 (the versions compatible with our
+# esp-idf-svc 0.50) use the removed `#![feature(inline_const_pat)]` and will NOT
+# compile on rustc 1.95+. See the esp32-nimble pin comment in Cargo.toml.
 #
 # The default USB build must NOT reference this file, so the Bluetooth
 # controller / NimBLE host stay disabled there (no flash/RAM cost, byte-for-byte

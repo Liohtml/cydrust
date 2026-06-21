@@ -92,6 +92,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit_field"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e4b40c7323adcfc0a41c4b88143ed58346ff65a288fc144329c5c45e05d70c6"
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -618,6 +624,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f47e0157f2cb54f5ae1bd371b30a2ae4311e1c028f575cd4e81de7353215965"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "epd-waveshare"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5080903b18a41a89d1dfe07cd5d7f800165ed4dcdf0513b770f83c1e4750150c"
+dependencies = [
+ "bit_field",
+ "embedded-graphics-core",
+ "embedded-hal 1.0.0",
 ]
 
 [[package]]
@@ -1644,6 +1661,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-svc",
  "embuild 0.32.0",
+ "epd-waveshare",
  "esp-idf-hal",
  "esp-idf-svc",
  "esp-idf-sys",
