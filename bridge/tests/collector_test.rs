@@ -143,6 +143,7 @@ fn scan_dir(root: &std::path::Path, store: &Arc<Store>) {
             last_activity,
             waiting: false,
             waiting_since: None,
+            active_turn: false,
         });
     }
 }
