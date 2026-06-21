@@ -48,7 +48,16 @@ jobs:
         working-directory: ${{ matrix.workspace }}
         env:
           RUSTUP_TOOLCHAIN: stable
-        run: cargo audit --deny warnings
+        run: |
+          if [ "${{ matrix.workspace }}" = "firmware" ]; then
+            # atomic-polyfill (RUSTSEC-2023-0089) and proc-macro-error2 (RUSTSEC-2026-0173)
+            # are unmaintained but locked to the ESP-IDF toolchain ecosystem; we cannot update them.
+            cargo audit --deny warnings \
+              --ignore RUSTSEC-2023-0089 \
+              --ignore RUSTSEC-2026-0173
+          else
+            cargo audit --deny warnings
+          fi
 
   # ── cargo-deny (licenses + advisories + duplicates) ───────────────────────
   deny:

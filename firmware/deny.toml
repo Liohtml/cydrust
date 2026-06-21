@@ -9,14 +9,9 @@ allow = [
     "Unicode-DFS-2016",
     "Zlib",
 ]
-deny = ["GPL-2.0", "GPL-3.0", "AGPL-3.0"]
-unlicensed = "deny"
-copyleft = "warn"
 
 [advisories]
-db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
 unmaintained = "workspace"
 
 [bans]
