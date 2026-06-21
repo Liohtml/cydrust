@@ -326,20 +326,14 @@ fn txt<D: DrawTarget<Color = Rgb565>>(
 const BRAND_OPENCODE: Rgb565 = Rgb565::new(2, 46, 20);   // teal
 const BRAND_HERMES:   Rgb565 = Rgb565::new(7, 32, 30);   // blue
 
-// Provider badge (18x18): real logo for Claude/Codex, a coloured monogram for
-// OpenCode/Hermes (no logo bitmap available).
+// Provider badge (18x18): each provider's real logo.
 fn draw_badge<D: DrawTarget<Color = Rgb565>>(display: &mut D, tool: &str, x: i32, y: i32) {
     match tool {
         "codex"    => icons::draw_codex(display, x, y),
-        "opencode" => mono_badge(display, x, y, BRAND_OPENCODE, "O"),
-        "hermes"   => mono_badge(display, x, y, BRAND_HERMES, "H"),
+        "opencode" => icons::draw_opencode(display, x, y),
+        "hermes"   => icons::draw_hermes(display, x, y),
         _          => icons::draw_claude(display, x, y),
     }
-}
-
-fn mono_badge<D: DrawTarget<Color = Rgb565>>(display: &mut D, x: i32, y: i32, bg: Rgb565, ch: &str) {
-    rfill(display, x, y, 18, 18, 4, bg);
-    txt(display, &FONT_9X15_BOLD, ch, x + 9, y + 14, Alignment::Center, Rgb565::new(31, 63, 31));
 }
 
 // Display name + accent colour for a provider tool string.
@@ -494,8 +488,7 @@ fn render_sessions<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayS
 
 // Single-session detail overlay (tap a card to open, tap anywhere to go back).
 fn render_detail<D: DrawTarget<Color = Rgb565>>(display: &mut D, row: &SessionRow) {
-    let is_codex = row.tool.as_str() == "codex";
-    let (pname, accent) = if is_codex { ("Codex", c_codex()) } else { ("Claude", c_claude()) };
+    let (pname, accent) = provider_meta(row.tool.as_str());
 
     // back hint + id
     fill(display, 0, 28, 320, 16, c_bg());
@@ -505,7 +498,7 @@ fn render_detail<D: DrawTarget<Color = Rgb565>>(display: &mut D, row: &SessionRo
     }
 
     // provider icon + project + provider name
-    if is_codex { icons::draw_codex(display, 8, 54); } else { icons::draw_claude(display, 8, 54); }
+    draw_badge(display, row.tool.as_str(), 8, 54);
     fill(display, 32, 58, 288, 38, c_bg());
     txt(display, &FONT_9X15_BOLD, row.project.as_str(), 32, 74, Alignment::Left, c_fg());
     txt(display, &FONT_7X13, pname, 32, 92, Alignment::Left, accent);
