@@ -41,8 +41,15 @@
 - **Provider icons** — 18×18 px logos for all four providers alpha-composited onto the display via `draw_badge()`
 - **USAGE tab** — live rate-limit gauges (5h % used, weekly %, burn/hr, leftover %, ETA clock) for Claude and Codex; sourced from the Anthropic API and Codex session files
 - **METRICS tab** — today's per-model token/cost breakdown (up to 6 models); share bar + % label; totals line with optional USD sum; badge icon per provider row
+- **Prometheus `/metrics`** — scrape-ready Prometheus text exposition at `:5151/metrics`; no auth required (serve localhost-only if desired); covers session counts, per-model token/cost gauges, and provider totals
+- **Multi-host federation** — `POST /federation/ingest` lets remote bridge nodes push session rows to an aggregator; `RemoteStore` keyed by `node/session-id` with 30 s TTL; aggregator `/state` merges local + remote rows transparently
+- **Hook injection binaries** — `install_hooks` merges six hook events into `~/.claude/settings.json` idempotently (VIBE_MARKER blocks, preserves user hooks); `vibe_hook` is the lightweight per-event process spawned by Claude Code (exits 0 always, 1500 ms timeout)
 - **NVS-persisted settings** — SETTINGS tab: backlight brightness (LEDC PWM, 10–100 %), sleep timer, dark/light theme; all survive power cycles
 - **Dual transport** — WiFi for wireless operation, USB serial for zero-config corporate networks; `serial_bridge` reconnects automatically on device unplug/replug
+- **OTA updates over WiFi** — `wifi,ota` feature uses `esp_https_ota`; dual OTA partition table (2×1664 KiB app slots, 4 MB flash); aborts cleanly and reboots to the old slot on failure
+- **E-ink variant** — `eink` feature targets a Waveshare 2.9" B/W SSD1680/IL3820 e-paper panel via `epd-waveshare 0.6`; USB-transport only (mutually exclusive with `wifi`)
+- **BLE transport** — NimBLE GATT server in `firmware/src/ble.rs` (code-complete + API-correct); blocked on `esp32-nimble 0.9/0.10` requiring a removed nightly feature; see [BLE note](#ble-transport-note) below
+- **Pre-built firmware releases** — `firmware-release.yml` builds merged 4 MB flashable `.bin` images (bootloader + partition table + app) and attaches them to GitHub Releases on each `v*` tag; flash at offset `0x0` with `esptool` — no Rust toolchain required
 - **Offline detection** — red banner fires after 3 missed polls (WiFi) or 6 s silence (USB), then self-heals
 - **Flicker-free rendering** — data refreshes repaint in-place; full screen clears only on tab/view switches
 - **Hook integration** — Claude Code `Notification` hook flips a session to *Waiting*; `POST /ack` clears it
@@ -141,11 +148,21 @@
 | Component | Crate / binary | Role |
 |-----------|---------------|------|
 | `bridge/src/collector.rs` | `walkdir`, `dirs-next` | Scans `~/.claude/projects` every 2 s |
-| `bridge/src/state.rs` | stdlib `RwLock` | In-memory session store |
-| `bridge/src/hub.rs` | `axum 0.8` | REST endpoints `/state`, `/ack`, `/hook` |
+| `bridge/src/collector_codex.rs` | `serde_json` | Reads Codex session DB; extracts usage + sessions |
+| `bridge/src/collector_opencode.rs` | `rusqlite` | Reads OpenCode SQLite DB (bundled driver) |
+| `bridge/src/collector_hermes.rs` | `rusqlite` | Reads Hermes SQLite DB |
+| `bridge/src/state.rs` | stdlib `RwLock` | In-memory session store (upsert / ack / snapshot / reap) |
+| `bridge/src/hub.rs` | `axum 0.8` | REST endpoints `/state`, `/ack`, `/hook`, `/metrics`, `/federation/ingest` |
+| `bridge/src/federation.rs` | `ureq` | `RemoteStore` TTL cache; push (node→aggregator) and ingest (aggregator endpoint) |
+| `bridge/src/metrics.rs` | stdlib | Prometheus text exposition for sessions, usage, and per-model cost |
+| `bridge/src/bin/install_hooks.rs` | `serde_json` | Idempotent Claude Code hook installer (merges into `settings.json`) |
+| `bridge/src/bin/vibe_hook.rs` | `ureq` | Lightweight per-event hook process spawned by Claude Code; always exits 0 |
 | `bridge/src/bin/serial_bridge.rs` | `serialport`, `ureq` | USB transport proxy, emits compact short-key JSON |
-| `firmware/src/main.rs` | `esp-idf-hal`, `mipidsi`, `embedded-graphics` | Display driver, JSON parser, settings, render loop |
-| `firmware/src/icons.rs` | `embedded-graphics` | Claude + Codex 18×18 provider logos with alpha compositing |
+| `firmware/src/main.rs` | `esp-idf-hal`, `mipidsi`, `embedded-graphics` | Display driver, JSON parser, settings (NVS), render loop |
+| `firmware/src/icons.rs` | `embedded-graphics` | All four provider 18×18 logos with alpha compositing |
+| `firmware/src/ota.rs` | `esp-idf-svc` | OTA update via `esp_https_ota`; aborts to old slot on failure |
+| `firmware/src/eink.rs` | `epd-waveshare` | E-paper display driver for Waveshare 2.9" B/W (SSD1680/IL3820) |
+| `firmware/src/ble.rs` | `esp32-nimble` | BLE GATT server — code-complete, toolchain-blocked (see note) |
 
 ---
 
@@ -194,7 +211,16 @@ The bridge starts scanning `~/.claude/projects` immediately.
 
 ### 4 — Wire up Claude Code hooks (optional but recommended)
 
-Add this to your Claude Code `settings.json` so *Waiting* state fires in real time:
+**Automatic (recommended):** use the `install_hooks` binary to merge hook config into `~/.claude/settings.json` idempotently:
+
+```bash
+cd bridge
+cargo run --bin install_hooks -- --url http://localhost:5151 --token your-secret-token-here
+```
+
+Re-run any time; it replaces the VIBE_MARKER block and leaves any other hooks untouched.
+
+**Manual:** if you prefer to edit `settings.json` yourself, add a `Notification` hook so *Waiting* state fires in real time:
 
 ```json
 {
@@ -209,21 +235,12 @@ Add this to your Claude Code `settings.json` so *Waiting* state fires in real ti
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -X POST http://localhost:5151/hook -H 'Content-Type: application/json' -H 'X-VibeMonitor-Token: your-secret-token-here' -d '{\"sessionId\":\"$SESSION_ID\",\"hook_event_name\":\"Stop\"}'"
-          }
-        ]
-      }
     ]
   }
 }
 ```
+
+> Only `Notification` flips a session to *Waiting*. Other hook events (`Stop`, `PreToolUse`, etc.) are forwarded to the bridge for activity tracking but do not change the waiting flag.
 
 ### 5a — Build and flash (WiFi transport)
 
@@ -288,6 +305,21 @@ cargo run --bin serial_bridge -- --port COM7 --url http://localhost:5151 --token
 | `host` | `String` | `"0.0.0.0"` | TCP bind address for the Axum server |
 | `port` | `u16` | `5151` | TCP port |
 
+#### Federation (optional)
+
+Add a `[federation]` section to enable multi-host mode:
+
+```toml
+[federation]
+role     = "node"                        # "node" | "aggregator" | "none" (default)
+upstream = "http://192.168.1.100:5151"  # aggregator URL (node role only)
+node_id  = "dev-rig-1"                  # prefix for remote session IDs
+```
+
+- **`node`** — pushes local session rows to `upstream` every 2 s via `POST /federation/ingest`
+- **`aggregator`** — accepts ingest payloads from nodes; merges them into `/state` with 30 s TTL
+- Omit the section (or set `role = "none"`) for standalone operation
+
 ### Firmware — environment variables (WiFi mode only)
 
 | Variable | Example | Description |
@@ -306,6 +338,9 @@ These are baked into the binary at compile time via `env!()` macros; no runtime 
 |-------------|---------|--------|
 | *(none)* | yes | USB serial transport via UART0 |
 | `wifi` | no | WiFi transport; requires `VIBE_*` env vars |
+| `wifi,ota` | no | WiFi + OTA updates via `esp_https_ota`; uses `partitions_ota.csv` |
+| `eink` | no | E-paper display (Waveshare 2.9" B/W); USB-transport only — **mutually exclusive with `wifi`** |
+| `ble` | no | BLE GATT server; code-complete but toolchain-blocked — see [BLE note](#ble-transport-note) |
 
 ```bash
 # USB (default)
@@ -313,6 +348,12 @@ cargo build --release
 
 # WiFi
 cargo build --release --features wifi
+
+# WiFi + OTA
+cargo build --release --features wifi,ota
+
+# E-ink (USB transport, separate SPI bus)
+cargo build --release --features eink
 ```
 
 ### Tunable constants (source-level)
@@ -418,7 +459,7 @@ X-VibeMonitor-Token: HGWcjjofIUFUTLxo
 
 ### `POST /hook`
 
-Receives Claude Code hook events. Setting a session to *waiting* can be triggered via `Notification` or `Stop` events.
+Receives Claude Code hook events. Only the `Notification` event sets a session to *Waiting*; all other events are accepted and update activity timestamps but do not change the waiting flag.
 
 **Request**
 
@@ -433,19 +474,61 @@ X-VibeMonitor-Token: HGWcjjofIUFUTLxo
 }
 ```
 
-*Alternatively* (legacy field names are accepted):
+Both `id`/`sessionId` and `event`/`hook_event_name` field aliases are accepted.
 
-```jsonc
+**Response** `200 OK` (empty body)
+
+**Events that trigger *waiting*:** `"Notification"` only.
+All other event names (including `"Stop"`) are silently accepted and ignored for the waiting flag.
+
+---
+
+### `GET /metrics`
+
+Prometheus text exposition (no auth required — intended for `localhost`-scoped scraping).
+
+```
+GET /metrics HTTP/1.1
+```
+
+**Response** `200 OK` — `Content-Type: text/plain; version=0.0.4`
+
+```
+# HELP vibe_sessions_total Number of live sessions by status
+# TYPE vibe_sessions_total gauge
+vibe_sessions_total{status="working"} 2
+vibe_sessions_total{status="waiting"} 1
+vibe_sessions_total{status="idle"} 3
+# HELP vibe_model_tokens_total Token count per model today
+# TYPE vibe_model_tokens_total gauge
+vibe_model_tokens_total{model="claude-opus-4-5",provider="claude"} 142000
+...
+```
+
+---
+
+### `POST /federation/ingest`
+
+Accepts a session payload from a node bridge and merges it into the aggregator's `RemoteStore` with a 30 s TTL.
+
+**Request**
+
+```http
+POST /federation/ingest HTTP/1.1
+Content-Type: application/json
+X-VibeMonitor-Token: HGWcjjofIUFUTLxo
+
 {
-  "id": "abc123",
-  "event": "Stop"
+  "node_id": "dev-rig-1",
+  "ts": 1750000000,
+  "sessions": [
+    { "id": "abc123", "tool": "claude", "project": "cydrust",
+      "status": "working", "age_sec": 12, "waiting": false }
+  ]
 }
 ```
 
 **Response** `200 OK` (empty body)
-
-**Events that trigger *waiting*:** `"Notification"`, `"Stop"`
-All other event names are silently accepted and ignored.
 
 ---
 
@@ -454,30 +537,47 @@ All other event names are silently accepted and ignored.
 ```
 cydrust/
 ├── bridge/                         # Host-side Rust/Axum server
-│   ├── Cargo.toml                  # vibe-bridge crate (axum, tokio, walkdir…)
-│   ├── config.toml                 # Runtime config: token, host, port
+│   ├── Cargo.toml                  # vibe-bridge crate (axum, tokio, walkdir, ureq, rusqlite…)
+│   ├── config.toml                 # Runtime config: token, host, port, [federation]
+│   ├── deny.toml                   # cargo-deny license + advisory policy
 │   └── src/
-│       ├── main.rs                 # Entry point — loads config, spawns collector, starts HTTP
+│       ├── main.rs                 # Entry point — config, background threads, HTTP server
 │       ├── collector.rs            # Walks ~/.claude/projects/**/*.jsonl every 2 s
-│       ├── state.rs                # RwLock<HashMap> session store (upsert / ack / snapshot)
-│       ├── hub.rs                  # Axum router: GET /state, POST /ack, POST /hook
-│       ├── model.rs                # Shared types: Session, SessionRow, StateResponse…
+│       ├── collector_codex.rs      # Reads Codex session DB for usage + sessions
+│       ├── collector_opencode.rs   # Reads OpenCode SQLite DB via bundled rusqlite
+│       ├── collector_hermes.rs     # Reads Hermes SQLite DB
+│       ├── state.rs                # RwLock<HashMap> session store (upsert / ack / snapshot / reap)
+│       ├── hub.rs                  # Axum router: /state, /ack, /hook, /metrics, /federation/ingest
+│       ├── federation.rs           # RemoteStore TTL cache + push loop (node→aggregator)
+│       ├── metrics.rs              # Prometheus text exposition (sessions + usage + cost)
+│       ├── model.rs                # Shared types: Session, SessionRow, StateResponse, Metrics…
+│       ├── usage.rs                # Usage polling (Anthropic API + Codex)
 │       └── bin/
-│           └── serial_bridge.rs   # USB transport binary: polls /state → COM port
+│           ├── serial_bridge.rs    # USB transport binary: polls /state → COM port
+│           ├── install_hooks.rs    # Idempotent Claude Code hook installer (settings.json)
+│           └── vibe_hook.rs        # Per-event hook process spawned by Claude Code
 │
 ├── firmware/                       # ESP32 embedded Rust
-│   ├── Cargo.toml                  # vibe-firmware crate; feature = "wifi" for WiFi mode
+│   ├── Cargo.toml                  # vibe-firmware crate; features: wifi, ota, eink, ble
 │   ├── build.rs                    # embuild sysenv output (ESP-IDF integration)
 │   ├── rust-toolchain.toml         # channel = "esp"
-│   └── .cargo/
-│       └── config.toml             # target = xtensa-esp32-espidf, ESP_IDF_VERSION = v5.3.2
+│   ├── partitions_ota.csv          # Dual OTA partition table (2×1664 KiB, 4 MB flash)
+│   ├── sdkconfig.defaults          # Base ESP-IDF sdkconfig
+│   ├── sdkconfig.defaults.ota      # OTA-specific sdkconfig overrides
+│   ├── sdkconfig.defaults.ble      # BLE-specific sdkconfig overrides
+│   ├── package.sh / package.ps1    # Merges bootloader + table + app into flashable .bin
+│   ├── RELEASES.md                 # Pre-built release instructions
+│   ├── deny.toml                   # cargo-deny policy for firmware workspace
 │   └── src/
-│       ├── main.rs                 # SPI init, render(), parse_state(), settings (NVS), WiFi/USB loops
-│       └── icons.rs                # Claude + Codex 18×18 logos (r5,g6,b5,alpha pixel arrays)
+│       ├── main.rs                 # SPI init, render(), parse_state(), settings (NVS), all transport loops
+│       ├── icons.rs                # All four provider 18×18 logos (r5,g6,b5,alpha pixel arrays)
+│       ├── ota.rs                  # OTA update via esp_https_ota (wifi,ota feature)
+│       ├── eink.rs                 # E-paper display driver — Waveshare 2.9" B/W (eink feature)
+│       └── ble.rs                  # BLE GATT server — NimBLE, newline-JSON frames (ble feature)
 │
 └── docs/
     └── assets/
-        ├── banner.png              # Header banner (place your photo/render here)
+        ├── banner.png              # Header banner
         └── demo.gif                # Screen recording of the live display
 ```
 
@@ -646,21 +746,24 @@ Check: is `vibe-bridge` running? Is `serial_bridge` running (USB mode)? Check fi
 - [x] ST7789 display driver with `embedded-graphics`
 - [x] WiFi transport (polling)
 - [x] USB / serial transport + `serial_bridge` binary
-- [x] Hook integration (`Notification` / `Stop` → waiting state)
+- [x] Hook integration — `Notification` → *Waiting* state; `install_hooks` + `vibe_hook` binaries
 - [x] Offline detection and recovery banner
 - [x] USAGE tab — full token usage model: period %, weekly %, burn rate, ETA clock
 - [x] SETTINGS tab — brightness (LEDC PWM), sleep timer, dark/light theme, NVS-persisted
 - [x] Session detail overlay — per-session id, age, wait duration, summary
-- [x] Provider icons — Claude + Codex 18×18 logos on display
+- [x] Provider icons — all four provider 18×18 logos on display
 - [x] Flicker-free rendering — background refresh without full screen clear
 - [x] Extended serial protocol — full usage + session metadata in compact short-key format
-- [ ] Claude Code extension — inject hook config automatically via `claude settings`
-- [ ] OTA firmware updates over WiFi (ESP-IDF `esp_https_ota`)
-- [ ] Multi-host federation — aggregate sessions from several developer machines
-- [ ] BLE transport — send display data over Bluetooth LE without WiFi or USB
-- [ ] `e-ink` variant — low-power SPI e-paper display for status on a shelf
-- [ ] Prometheus metrics endpoint on the bridge
-- [ ] Pre-built firmware releases (`.bin`) for common ESP32 boards
+- [x] Prometheus `/metrics` endpoint — scrape-ready session/usage/cost exposition at `:5151/metrics`
+- [x] Multi-host federation — `/federation/ingest`, `RemoteStore` with 30 s TTL, node-id prefixing
+- [x] OTA firmware updates over WiFi — `esp_https_ota`, dual OTA partition table, abort-on-failure
+- [x] `e-ink` variant — Waveshare 2.9" B/W via `epd-waveshare 0.6` (`--features eink`)
+- [x] Pre-built firmware releases — `firmware-release.yml` produces merged 4 MB `.bin` on each `v*` tag
+- [~] BLE transport — code-complete (NimBLE GATT server); blocked on toolchain version alignment (see below)
+
+### BLE transport note
+
+`firmware/src/ble.rs` is API-correct and compiles in isolation, but `esp32-nimble 0.9/0.10` — the only versions that match `esp-idf-svc 0.50` — require the `inline_const_pat` Rust nightly feature that was removed. Upgrading to `esp32-nimble 0.11+` (which fixes this) also requires `esp-idf-svc 0.51`, which introduces breaking changes to the default LCD build. Resolution requires a coordinated `esp-idf-svc` / `esp32-nimble` version bump across the whole firmware crate.
 
 ---
 
