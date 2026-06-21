@@ -29,7 +29,10 @@ const DEFAULT_URL: &str = "http://localhost:5151";
 const HTTP_TIMEOUT: Duration = Duration::from_millis(1500);
 
 fn now_secs() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
 }
 
 /// Last path component of cwd, used as the project label (mirrors the Python hook).
@@ -47,8 +50,14 @@ fn project_from_cwd(cwd: &str) -> String {
 fn from_config(path: &str) -> Option<(Option<String>, Option<String>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let val: toml::Value = toml::from_str(&text).ok()?;
-    let token = val.get("token").and_then(|t| t.as_str()).map(|s| s.to_string());
-    let url = match (val.get("host").and_then(|h| h.as_str()), val.get("port").and_then(|p| p.as_integer())) {
+    let token = val
+        .get("token")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+    let url = match (
+        val.get("host").and_then(|h| h.as_str()),
+        val.get("port").and_then(|p| p.as_integer()),
+    ) {
         (Some(host), Some(port)) => {
             // 0.0.0.0 means "bind all" on the server; from the client side talk to localhost.
             let host = if host == "0.0.0.0" { "127.0.0.1" } else { host };
@@ -74,18 +83,33 @@ fn run() {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--url" => { url = args.get(i + 1).cloned(); i += 2; }
-            "--token" => { token = args.get(i + 1).cloned(); i += 2; }
-            "--config" => { config_path = args.get(i + 1).cloned(); i += 2; }
-            _ => { i += 1; }
+            "--url" => {
+                url = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--token" => {
+                token = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--config" => {
+                config_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
         }
     }
 
     // ── resolve config: flags > env > config.toml > default ─────────────────
     if let Some(cfg) = config_path.as_deref().and_then(from_config) {
         let (cfg_token, cfg_url) = cfg;
-        if token.is_none() { token = cfg_token; }
-        if url.is_none() { url = cfg_url; }
+        if token.is_none() {
+            token = cfg_token;
+        }
+        if url.is_none() {
+            url = cfg_url;
+        }
     }
     let url = url
         .or_else(|| std::env::var("VIBE_HUB_URL").ok())
@@ -111,7 +135,8 @@ fn run() {
         None
     };
 
-    let event = get_str(&["hook_event_name", "hookEventName"]).unwrap_or_else(|| "Stop".to_string());
+    let event =
+        get_str(&["hook_event_name", "hookEventName"]).unwrap_or_else(|| "Stop".to_string());
     let id = get_str(&["session_id", "sessionId"]).unwrap_or_else(|| "unknown".to_string());
     let cwd = get_str(&["cwd"]).unwrap_or_default();
     let project = project_from_cwd(&cwd);

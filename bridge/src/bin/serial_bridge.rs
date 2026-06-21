@@ -10,7 +10,6 @@
 /// Usage:
 ///   cargo run --bin serial_bridge -- --port COM7
 ///   cargo run --bin serial_bridge -- --port COM7 --url http://localhost:5151 --token <tok>
-
 use std::{
     io::{Read, Write},
     thread,
@@ -18,8 +17,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use serialport::SerialPort;
 use serde_json::Value;
+use serialport::SerialPort;
 
 const POLL_SECS: u64 = 2;
 const BAUD: u32 = 115_200;
@@ -83,10 +82,22 @@ fn main() -> Result<()> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--port"   => { i += 1; port_name   = args[i].clone(); }
-            "--url"    => { i += 1; bridge_url  = args[i].clone(); }
-            "--token"  => { i += 1; token = Some(args[i].clone()); }
-            "--config" => { i += 1; config_path = args[i].clone(); }
+            "--port" => {
+                i += 1;
+                port_name = args[i].clone();
+            }
+            "--url" => {
+                i += 1;
+                bridge_url = args[i].clone();
+            }
+            "--token" => {
+                i += 1;
+                token = Some(args[i].clone());
+            }
+            "--config" => {
+                i += 1;
+                config_path = args[i].clone();
+            }
             _ => {}
         }
         i += 1;
@@ -99,7 +110,8 @@ fn main() -> Result<()> {
             let content = std::fs::read_to_string(&config_path)
                 .with_context(|| format!("reading {config_path}"))?;
             let parsed: toml::Value = content.parse().context("parse config.toml")?;
-            parsed["token"].as_str()
+            parsed["token"]
+                .as_str()
                 .with_context(|| "token not found in config.toml")?
                 .to_string()
         }
@@ -112,7 +124,10 @@ fn main() -> Result<()> {
     let mut rx: Vec<u8> = Vec::new();
     'reconnect: loop {
         let mut port = match open_port(&port_name) {
-            Some(p) => { println!("[serial_bridge] connected to {port_name}"); p }
+            Some(p) => {
+                println!("[serial_bridge] connected to {port_name}");
+                p
+            }
             None => {
                 eprintln!("[serial_bridge] {port_name} unavailable; retrying in 2s...");
                 thread::sleep(Duration::from_secs(2));
@@ -134,7 +149,7 @@ fn main() -> Result<()> {
                         let line = make_mini(&json) + "\n";
                         if let Err(e) = port.write_all(line.as_bytes()) {
                             eprintln!("[serial_bridge] write error ({e}); reconnecting...");
-                            continue 'reconnect;        // device gone → re-open
+                            continue 'reconnect; // device gone → re-open
                         }
                         let _ = port.flush();
                     }
@@ -151,7 +166,9 @@ fn main() -> Result<()> {
                         let line: Vec<u8> = rx.drain(..=pos).collect();
                         if let Ok(s) = std::str::from_utf8(&line) {
                             let l = s.trim();
-                            if l.is_empty() { continue; }
+                            if l.is_empty() {
+                                continue;
+                            }
                             if let Some(id) = extract_ack_id(l) {
                                 match post_ack(&bridge_url, &token, id) {
                                     Ok(_) => println!("[serial_bridge] ack forwarded: {id}"),
@@ -162,12 +179,14 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                    if rx.len() > 8192 { rx.clear(); }   // guard against runaway
+                    if rx.len() > 8192 {
+                        rx.clear();
+                    } // guard against runaway
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}   // normal idle
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {} // normal idle
                 Err(e) => {
                     eprintln!("[serial_bridge] read error ({e}); reconnecting...");
-                    continue 'reconnect;                 // device gone → re-open
+                    continue 'reconnect; // device gone → re-open
                 }
             }
             thread::sleep(Duration::from_millis(40));
@@ -190,12 +209,12 @@ fn make_mini(body: &str) -> String {
         .iter()
         .filter_map(|s| {
             let project = s["project"].as_str()?;
-            let status  = s["status"].as_str()?;
-            let tool    = s["tool"].as_str().unwrap_or("claude");
+            let status = s["status"].as_str()?;
+            let tool = s["tool"].as_str().unwrap_or("claude");
             let mut o = serde_json::Map::new();
             o.insert("project".into(), project.into());
-            o.insert("status".into(),  status.into());
-            o.insert("tool".into(),    tool.into());
+            o.insert("status".into(), status.into());
+            o.insert("tool".into(), tool.into());
             // Detail-view fields (short keys). id always; ageSec when present;
             // waitingSec + summary only for waiting sessions (keeps payload small).
             if let Some(id) = s["id"].as_str() {
@@ -217,7 +236,7 @@ fn make_mini(body: &str) -> String {
             }
             Some(Value::Object(o))
         })
-        .take(6)            // device shows at most 6 cards; bounds the UART payload
+        .take(6) // device shows at most 6 cards; bounds the UART payload
         .collect();
 
     serde_json::json!({
@@ -242,7 +261,9 @@ fn metrics_mini(m: &Value) -> Value {
             if let Some(models) = pv["models"].as_array() {
                 for md in models {
                     let tk = md["tokens"].as_f64().unwrap_or(0.0);
-                    if tk <= 0.0 { continue; }
+                    if tk <= 0.0 {
+                        continue;
+                    }
                     let mn = md["model"].as_str().unwrap_or("?").to_string();
                     rows.push((pname.clone(), mn, tk, md["usd"].as_f64()));
                 }
@@ -257,21 +278,31 @@ fn metrics_mini(m: &Value) -> Value {
         o.insert("p".into(), p.into());
         o.insert("n".into(), mn.chars().take(16).collect::<String>().into());
         o.insert("t".into(), tk.into());
-        if let Some(u) = usd { o.insert("u".into(), ((u * 100.0).round() / 100.0).into()); }
+        if let Some(u) = usd {
+            o.insert("u".into(), ((u * 100.0).round() / 100.0).into());
+        }
         arr.push(Value::Object(o));
     }
     out.insert("m".into(), Value::Array(arr));
-    if let Some(t) = m["totals"]["tokens"].as_f64() { out.insert("tt".into(), t.into()); }
+    if let Some(t) = m["totals"]["tokens"].as_f64() {
+        out.insert("tt".into(), t.into());
+    }
     if let Some(u) = m["totals"]["usd"].as_f64() {
         out.insert("tu".into(), ((u * 100.0).round() / 100.0).into());
     }
-    if let Some(s) = m["totals"]["sessions"].as_i64() { out.insert("ts".into(), s.into()); }
-    if m["usdComplete"].as_bool().unwrap_or(false) { out.insert("uc".into(), true.into()); }
+    if let Some(s) = m["totals"]["sessions"].as_i64() {
+        out.insert("ts".into(), s.into());
+    }
+    if m["usdComplete"].as_bool().unwrap_or(false) {
+        out.insert("uc".into(), true.into());
+    }
     Value::Object(out)
 }
 
 /// Round to 3 decimals so fractions stay short on the wire (0.423 not 0.42318).
-fn round3(x: f64) -> f64 { (x * 1000.0).round() / 1000.0 }
+fn round3(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
+}
 
 /// Compact per-provider usage object with short keys. Fields are omitted when
 /// at their sentinel value so a quiet provider collapses to a few bytes — the
@@ -283,24 +314,36 @@ fn provider_mini(pv: &Value) -> Value {
     let mut m = serde_json::Map::new();
     let ok = pv["ok"].as_bool().unwrap_or(false);
     m.insert("ok".into(), ok.into());
-    if !ok { return Value::Object(m); }
+    if !ok {
+        return Value::Object(m);
+    }
 
     m.insert("p".into(), round3(pv["pct"].as_f64().unwrap_or(0.0)).into());
     m.insert("r".into(), pv["resetSec"].as_i64().unwrap_or(0).into());
 
     let wp = pv["weekPct"].as_f64().unwrap_or(-1.0);
-    if wp >= 0.0 { m.insert("wp".into(), round3(wp).into()); }
+    if wp >= 0.0 {
+        m.insert("wp".into(), round3(wp).into());
+    }
     let wr = pv["weekResetSec"].as_i64().unwrap_or(-1);
-    if wr >= 0 { m.insert("wr".into(), wr.into()); }
+    if wr >= 0 {
+        m.insert("wr".into(), wr.into());
+    }
     if pv["willExhaustBeforeReset"].as_bool().unwrap_or(false) {
         m.insert("we".into(), true.into());
     }
     let b = pv["burnPerHr"].as_f64().unwrap_or(0.0);
-    if b > 0.0 { m.insert("b".into(), round3(b).into()); }
+    if b > 0.0 {
+        m.insert("b".into(), round3(b).into());
+    }
     let lo = pv["leftoverPct"].as_f64().unwrap_or(-1.0);
-    if lo >= 0.0 { m.insert("lo".into(), round3(lo).into()); }
+    if lo >= 0.0 {
+        m.insert("lo".into(), round3(lo).into());
+    }
     if let Some(e) = pv["etaClock"].as_str() {
-        if !e.is_empty() { m.insert("e".into(), e.into()); }
+        if !e.is_empty() {
+            m.insert("e".into(), e.into());
+        }
     }
     Value::Object(m)
 }
@@ -312,10 +355,22 @@ fn compact_json(s: &str) -> String {
     let mut in_string = false;
     let mut escape = false;
     for c in s.chars() {
-        if escape { out.push(c); escape = false; continue; }
-        if c == '\\' && in_string { out.push(c); escape = true; continue; }
-        if c == '"' { in_string = !in_string; }
-        if !in_string && c.is_ascii_whitespace() { continue; }
+        if escape {
+            out.push(c);
+            escape = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            out.push(c);
+            escape = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+        }
+        if !in_string && c.is_ascii_whitespace() {
+            continue;
+        }
         out.push(c);
     }
     out

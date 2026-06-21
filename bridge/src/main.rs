@@ -1,7 +1,9 @@
 // Self-contained Rust hub: scans Claude/Codex/OpenCode/Hermes sessions, polls
 // usage, computes per-model metrics + titles, and serves /state — the all-Rust
 // replacement for the Python vibemonitor hub.
-use vibe_bridge::{collector, collector_hermes, collector_opencode, federation, hub, metrics, state, usage};
+use vibe_bridge::{
+    collector, collector_hermes, collector_opencode, federation, hub, metrics, state, usage,
+};
 
 use anyhow::Result;
 use std::{
@@ -26,13 +28,15 @@ struct PriceEntry {
 #[derive(Debug, Clone, serde::Deserialize, Default)]
 struct FederationConfig {
     #[serde(default = "default_role")]
-    role: String,                 // "standalone" | "node" | "aggregator"
+    role: String, // "standalone" | "node" | "aggregator"
     #[serde(default)]
-    upstream: Option<String>,     // node: aggregator base URL, e.g. http://aggregator:5151
+    upstream: Option<String>, // node: aggregator base URL, e.g. http://aggregator:5151
     #[serde(default)]
-    node_id: Option<String>,      // defaults to hostname
+    node_id: Option<String>, // defaults to hostname
 }
-fn default_role() -> String { "standalone".into() }
+fn default_role() -> String {
+    "standalone".into()
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct Config {
@@ -47,11 +51,18 @@ struct Config {
     federation: FederationConfig,
 }
 
-fn default_host() -> String { "0.0.0.0".into() }
-fn default_port() -> u16 { 5151 }
+fn default_host() -> String {
+    "0.0.0.0".into()
+}
+fn default_port() -> u16 {
+    5151
+}
 
 fn now_secs() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
 }
 
 #[tokio::main]
@@ -60,7 +71,9 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
-    let config_path = std::env::args().nth(1).unwrap_or_else(|| "config.toml".to_string());
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config.toml".to_string());
     let cfg_text = std::fs::read_to_string(&config_path)
         .map_err(|e| anyhow::anyhow!("Cannot read {config_path}: {e}"))?;
     let cfg: Config = toml::from_str(&cfg_text)?;
@@ -74,7 +87,7 @@ async fn main() -> Result<()> {
 
     let store = Arc::new(state::Store::new());
     let shared = Arc::new(RwLock::new(state::Shared::default()));
-    let remote = Arc::new(federation::RemoteStore::new());  // sessions from other machines
+    let remote = Arc::new(federation::RemoteStore::new()); // sessions from other machines
 
     // ── session scan + reaper loop (2s) ─────────────────────────────────────
     {
@@ -128,7 +141,11 @@ async fn main() -> Result<()> {
     // ── federation node push loop (2s): send local rows to the aggregator ───
     if cfg.federation.role == "node" {
         if let Some(upstream) = cfg.federation.upstream.clone() {
-            let node_id = cfg.federation.node_id.clone().unwrap_or_else(federation::hostname);
+            let node_id = cfg
+                .federation
+                .node_id
+                .clone()
+                .unwrap_or_else(federation::hostname);
             let store = store.clone();
             let shared = shared.clone();
             let token = cfg.token.clone();

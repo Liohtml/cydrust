@@ -80,7 +80,11 @@ fn read_claude_oauth_token() -> Option<String> {
 }
 
 fn credentials_path() -> Option<PathBuf> {
-    Some(dirs_next::home_dir()?.join(".claude").join(".credentials.json"))
+    Some(
+        dirs_next::home_dir()?
+            .join(".claude")
+            .join(".credentials.json"),
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -331,15 +335,24 @@ fn parse_codex_token_count(text: &str, now: u64) -> UsageInfo {
         _ => return UsageInfo::default(),
     };
 
-    let prim = rl.get("primary").cloned().unwrap_or(serde_json::Value::Null);
-    let sec = rl.get("secondary").cloned().unwrap_or(serde_json::Value::Null);
+    let prim = rl
+        .get("primary")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let sec = rl
+        .get("secondary")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
 
     let pct_used = match prim.get("used_percent").and_then(json_as_f64) {
         Some(p) => p,
         None => return UsageInfo::default(),
     };
 
-    let week_pct = sec.get("used_percent").and_then(json_as_f64).map(|w| w / 100.0);
+    let week_pct = sec
+        .get("used_percent")
+        .and_then(json_as_f64)
+        .map(|w| w / 100.0);
     let week_reset_sec = if sec.is_object() {
         Some(window_reset_sec(&sec, now))
     } else {
@@ -638,7 +651,7 @@ mod tests {
         let mut info = UsageInfo {
             ok: true,
             pct: Some(0.8),
-            reset_sec: Some(3600),    // 1h left → 4h elapsed
+            reset_sec: Some(3600), // 1h left → 4h elapsed
             window: Some("5h".into()),
             ..Default::default()
         };

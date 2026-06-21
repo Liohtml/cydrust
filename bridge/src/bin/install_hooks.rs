@@ -50,7 +50,11 @@ fn home_settings_path() -> Option<PathBuf> {
 fn resolve_hook_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let name = if cfg!(windows) { "vibe_hook.exe" } else { "vibe_hook" };
+    let name = if cfg!(windows) {
+        "vibe_hook.exe"
+    } else {
+        "vibe_hook"
+    };
     let candidate = dir.join(name);
     Some(candidate)
 }
@@ -94,7 +98,9 @@ fn merge_hooks(mut settings: Value, command: &str) -> Value {
     let root = settings.as_object_mut().unwrap();
 
     // Ensure `hooks` is an object.
-    let hooks_entry = root.entry("hooks").or_insert_with(|| Value::Object(Map::new()));
+    let hooks_entry = root
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()));
     if !hooks_entry.is_object() {
         *hooks_entry = Value::Object(Map::new());
     }
@@ -128,7 +134,10 @@ fn from_config(path: &str) -> (Option<String>, Option<String>) {
     let Ok(val) = toml::from_str::<toml::Value>(&text) else {
         return (None, None);
     };
-    let token = val.get("token").and_then(|t| t.as_str()).map(|s| s.to_string());
+    let token = val
+        .get("token")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
     let url = match (
         val.get("host").and_then(|h| h.as_str()),
         val.get("port").and_then(|p| p.as_integer()),
@@ -161,29 +170,49 @@ fn run() -> Result<(), String> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--url" => { url = args.get(i + 1).cloned(); i += 2; }
-            "--token" => { token = args.get(i + 1).cloned(); i += 2; }
-            "--config" => { config_path = args.get(i + 1).cloned(); i += 2; }
-            "--path" => { settings_path_override = args.get(i + 1).cloned(); i += 2; }
-            "--hook-exe" => { hook_exe_override = args.get(i + 1).cloned(); i += 2; }
+            "--url" => {
+                url = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--token" => {
+                token = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--config" => {
+                config_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--path" => {
+                settings_path_override = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--hook-exe" => {
+                hook_exe_override = args.get(i + 1).cloned();
+                i += 2;
+            }
             "-h" | "--help" => {
                 println!("Usage: install_hooks [--url URL] [--token TOK] [--config config.toml] [--path settings.json] [--hook-exe path]");
                 return Ok(());
             }
-            other => { return Err(format!("unknown argument: {other}")); }
+            other => {
+                return Err(format!("unknown argument: {other}"));
+            }
         }
     }
 
     // ── resolve url + token: flags > config.toml > defaults ─────────────────
     if let Some(cfg) = config_path.as_deref() {
         let (cfg_token, cfg_url) = from_config(cfg);
-        if token.is_none() { token = cfg_token; }
-        if url.is_none() { url = cfg_url; }
+        if token.is_none() {
+            token = cfg_token;
+        }
+        if url.is_none() {
+            url = cfg_url;
+        }
     }
     let url = url.unwrap_or_else(|| "http://localhost:5151".to_string());
-    let token = token.ok_or_else(|| {
-        "no token provided (use --token or --config <config.toml>)".to_string()
-    })?;
+    let token = token
+        .ok_or_else(|| "no token provided (use --token or --config <config.toml>)".to_string())?;
 
     // ── resolve the vibe_hook exe to register ───────────────────────────────
     let hook_exe = match hook_exe_override {
@@ -202,8 +231,9 @@ fn run() -> Result<(), String> {
     // ── resolve settings.json path ──────────────────────────────────────────
     let settings_path = match settings_path_override {
         Some(p) => PathBuf::from(p),
-        None => home_settings_path()
-            .ok_or_else(|| "could not resolve home directory for ~/.claude/settings.json".to_string())?,
+        None => home_settings_path().ok_or_else(|| {
+            "could not resolve home directory for ~/.claude/settings.json".to_string()
+        })?,
     };
 
     // ── read (or start fresh) ───────────────────────────────────────────────
@@ -240,7 +270,10 @@ fn run() -> Result<(), String> {
     std::fs::write(&settings_path, format!("{pretty}\n"))
         .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
 
-    println!("installed vibe-bridge hooks into {}", settings_path.display());
+    println!(
+        "installed vibe-bridge hooks into {}",
+        settings_path.display()
+    );
     println!("  hub url : {url}/hook");
     println!("  hook exe: {}", hook_exe.display());
     println!("  events  : {}", HOOK_EVENTS.join(", "));
@@ -266,7 +299,11 @@ mod tests {
         let merged = merge_hooks(Value::Object(Map::new()), cmd);
         // every event registered, with exactly one of our blocks
         for ev in HOOK_EVENTS {
-            assert_eq!(ours_for(&merged, ev), 1, "event {ev} should have 1 vibe block");
+            assert_eq!(
+                ours_for(&merged, ev),
+                1,
+                "event {ev} should have 1 vibe block"
+            );
         }
         // schema check: matcher present + type:command
         let blk = &merged["hooks"]["Notification"][0];
@@ -297,10 +334,14 @@ mod tests {
         let stop = merged["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 2);
         assert_eq!(ours_for(&merged, "Stop"), 1);
-        assert!(stop.iter().any(|b| b["hooks"][0]["command"] == "echo user-stop"));
+        assert!(stop
+            .iter()
+            .any(|b| b["hooks"][0]["command"] == "echo user-stop"));
         // user's PreToolUse Bash guard preserved
         let pre_tool = merged["hooks"]["PreToolUse"].as_array().unwrap();
-        assert!(pre_tool.iter().any(|b| b["hooks"][0]["command"] == "echo guard"));
+        assert!(pre_tool
+            .iter()
+            .any(|b| b["hooks"][0]["command"] == "echo guard"));
         assert_eq!(ours_for(&merged, "PreToolUse"), 1);
     }
 
@@ -319,9 +360,15 @@ mod tests {
         for ev in HOOK_EVENTS {
             assert_eq!(ours_for(&updated, ev), 1, "still single after update: {ev}");
         }
-        assert_eq!(updated["hooks"]["Stop"]
-            .as_array().unwrap().iter()
-            .find(|b| block_is_ours(b)).unwrap()["hooks"][0]["command"], cmd2);
+        assert_eq!(
+            updated["hooks"]["Stop"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| block_is_ours(b))
+                .unwrap()["hooks"][0]["command"],
+            cmd2
+        );
     }
 
     #[test]

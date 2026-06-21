@@ -158,9 +158,7 @@ fn parse_rollout(path: &Path) -> Rollout {
                 }
             }
             Some("event_msg") => {
-                let pt = payload
-                    .and_then(|p| p.get("type"))
-                    .and_then(|v| v.as_str());
+                let pt = payload.and_then(|p| p.get("type")).and_then(|v| v.as_str());
                 match pt {
                     Some(WORKING) => last_turn_state = Some(WORKING),
                     Some(DONE) => last_turn_state = Some(DONE),
@@ -182,7 +180,10 @@ fn parse_rollout(path: &Path) -> Rollout {
         }
         None => {
             // version-agnostic fallback: who spoke last.
-            (last_msg_kind == Some("agent"), last_msg_kind == Some("user"))
+            (
+                last_msg_kind == Some("agent"),
+                last_msg_kind == Some("user"),
+            )
         }
     };
 

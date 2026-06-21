@@ -89,7 +89,10 @@ fn pricing_entry<'a>(
     if let Some(e) = pricing.get(model) {
         return Some(e);
     }
-    pricing.iter().find(|(k, _)| model.contains(k.as_str())).map(|(_, v)| v)
+    pricing
+        .iter()
+        .find(|(k, _)| model.contains(k.as_str()))
+        .map(|(_, v)| v)
 }
 
 /// USD using separate input/output rates plus a cache-read discount (cache at 0.1x
@@ -114,11 +117,7 @@ fn price_model(
 
 /// USD using a single blended rate over a token total (Codex path). Port of
 /// costs._price_for, used for the "codex" pricing key. None when no entry.
-fn price_blended(
-    model: &str,
-    pricing: &HashMap<String, (f64, f64)>,
-    tokens: i64,
-) -> Option<f64> {
+fn price_blended(model: &str, pricing: &HashMap<String, (f64, f64)>, tokens: i64) -> Option<f64> {
     if model.is_empty() {
         return None;
     }
@@ -183,7 +182,11 @@ impl Builder {
         if let Some(u) = usd {
             self.usd = Some(round4(self.usd.unwrap_or(0.0) + u));
         }
-        let key = if raw_model.is_empty() { "unknown" } else { raw_model };
+        let key = if raw_model.is_empty() {
+            "unknown"
+        } else {
+            raw_model
+        };
         let b = self.by_model.entry(key.to_string()).or_default();
         b.tin += tin;
         b.tout += tout;
@@ -203,7 +206,11 @@ impl Builder {
                 "unknown".to_string()
             } else {
                 let s = short_model(raw);
-                if s.is_empty() { raw.clone() } else { s }
+                if s.is_empty() {
+                    raw.clone()
+                } else {
+                    s
+                }
             };
             let m = merged.entry(label).or_default();
             m.tin += b.tin;
@@ -216,7 +223,11 @@ impl Builder {
         let mut models: Vec<ModelMetric> = merged
             .iter()
             .filter(|(_, m)| m.total > 0)
-            .map(|(label, m)| ModelMetric { model: label.clone(), tokens: m.total, usd: m.usd })
+            .map(|(label, m)| ModelMetric {
+                model: label.clone(),
+                tokens: m.total,
+                usd: m.usd,
+            })
             .collect();
         // sort by tokens DESC; ties keep stable order
         models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
@@ -245,11 +256,15 @@ impl Builder {
 // ─── JSON line helpers ───────────────────────────────────────────────────────
 
 fn read_text(path: &Path) -> Option<String> {
-    std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+    std::fs::read(path)
+        .ok()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 fn as_i64(v: &serde_json::Value) -> i64 {
-    v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)).unwrap_or(0)
+    v.as_i64()
+        .or_else(|| v.as_f64().map(|f| f as i64))
+        .unwrap_or(0)
 }
 
 // ─── claude: per-model token breakdown (costs._claude_tokens_by_model) ───────
@@ -277,11 +292,20 @@ fn claude_tokens_by_model(path: &Path) -> BTreeMap<String, Bucket> {
             Some(u) if u.is_object() => u,
             _ => continue,
         };
-        let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
+        let model = msg
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown");
         let ti = usage.get("input_tokens").map(as_i64).unwrap_or(0);
         let to = usage.get("output_tokens").map(as_i64).unwrap_or(0);
-        let cache = usage.get("cache_creation_input_tokens").map(as_i64).unwrap_or(0)
-            + usage.get("cache_read_input_tokens").map(as_i64).unwrap_or(0);
+        let cache = usage
+            .get("cache_creation_input_tokens")
+            .map(as_i64)
+            .unwrap_or(0)
+            + usage
+                .get("cache_read_input_tokens")
+                .map(as_i64)
+                .unwrap_or(0);
         let b = by_model.entry(model.to_string()).or_default();
         b.tin += ti;
         b.tout += to;
@@ -347,10 +371,12 @@ fn codex_tokens_by_model(path: &Path) -> (Option<String>, i64, i64, i64, i64) {
         };
         let payload = o.get("payload").filter(|p| p.is_object()).unwrap_or(&o);
         if model.is_none() {
-            let m = payload
-                .get("model")
-                .and_then(|v| v.as_str())
-                .or_else(|| payload.get("info").and_then(|i| i.get("model")).and_then(|v| v.as_str()));
+            let m = payload.get("model").and_then(|v| v.as_str()).or_else(|| {
+                payload
+                    .get("info")
+                    .and_then(|i| i.get("model"))
+                    .and_then(|v| v.as_str())
+            });
             if let Some(m) = m {
                 if !m.is_empty() {
                     model = Some(m.to_string());
@@ -359,7 +385,10 @@ fn codex_tokens_by_model(path: &Path) -> (Option<String>, i64, i64, i64, i64) {
         }
         if payload.get("type").and_then(|t| t.as_str()) == Some("token_count") {
             let empty = serde_json::Value::Null;
-            let info = payload.get("info").filter(|i| i.is_object()).unwrap_or(payload);
+            let info = payload
+                .get("info")
+                .filter(|i| i.is_object())
+                .unwrap_or(payload);
             let tu = info
                 .get("total_token_usage")
                 .or_else(|| info.get("last_token_usage"))
@@ -430,7 +459,10 @@ fn open_ro(db: &Path) -> Option<rusqlite::Connection> {
     if !db.exists() {
         return None;
     }
-    let uri = format!("file:{}?mode=ro&immutable=1", db.to_string_lossy().replace('\\', "/"));
+    let uri = format!(
+        "file:{}?mode=ro&immutable=1",
+        db.to_string_lossy().replace('\\', "/")
+    );
     rusqlite::Connection::open_with_flags(
         uri,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
@@ -476,7 +508,10 @@ fn opencode_metrics(midnight: f64) -> ProviderMetric {
             continue;
         }
         let usd = d.get("cost").and_then(|c| c.as_f64());
-        let model = d.get("modelID").and_then(|m| m.as_str()).unwrap_or("unknown");
+        let model = d
+            .get("modelID")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown");
         builder.accum(model, ti, to + extra, tot, usd);
         // one session per distinct contributing session id
         let sid = d
@@ -561,8 +596,11 @@ pub fn summarize_metrics(now: f64, pricing: &HashMap<String, (f64, f64)>) -> Met
 
     let total_tokens: i64 = providers.values().map(|p| p.tokens).sum();
     let total_sessions: i64 = providers.values().map(|p| p.sessions).sum();
-    let usd_vals: Vec<Option<f64>> =
-        providers.values().filter(|p| p.tokens > 0).map(|p| p.usd).collect();
+    let usd_vals: Vec<Option<f64>> = providers
+        .values()
+        .filter(|p| p.tokens > 0)
+        .map(|p| p.usd)
+        .collect();
     let active_count = usd_vals.len();
     let any_usd = usd_vals.iter().any(|v| v.is_some());
     let total_usd = if any_usd {
@@ -589,14 +627,45 @@ pub fn summarize_metrics(now: f64, pricing: &HashMap<String, (f64, f64)>) -> Met
 // =============================================================================
 
 const INJECTED_PREFIXES: &[&str] = &[
-    "<command-", "<local-command", "<system-reminder", "Caveat:", "<task-", "<task ",
-    "<tool", "<function", "<budget", "<user-prompt-submit", "<post-tool", "<pre-tool",
-    "<bash-input", "<bash-stdout", "<bash-stderr", "<ide_", "Base directory for this skill",
+    "<command-",
+    "<local-command",
+    "<system-reminder",
+    "Caveat:",
+    "<task-",
+    "<task ",
+    "<tool",
+    "<function",
+    "<budget",
+    "<user-prompt-submit",
+    "<post-tool",
+    "<pre-tool",
+    "<bash-input",
+    "<bash-stdout",
+    "<bash-stderr",
+    "<ide_",
+    "Base directory for this skill",
 ];
 
 const NOISE_REPLIES: &[&str] = &[
-    "yes", "ok", "okay", "y", "go", "go on", "continue", "sure", "do it", "next", "yep",
-    "yeah", "no", "n", "stop", "thanks", "thank you", "k", "please continue",
+    "yes",
+    "ok",
+    "okay",
+    "y",
+    "go",
+    "go on",
+    "continue",
+    "sure",
+    "do it",
+    "next",
+    "yep",
+    "yeah",
+    "no",
+    "n",
+    "stop",
+    "thanks",
+    "thank you",
+    "k",
+    "please continue",
 ];
 
 /// True if `text` opens with an angle-bracket wrapper tag like `<foo-bar>` or
@@ -671,7 +740,11 @@ fn first_line(text: &str, limit: usize) -> Option<String> {
         }
     }
     let s = cut.trim_end().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// Pull human prompt text out of a Claude message value (string content verbatim,
@@ -876,13 +949,16 @@ fn opencode_titles(out: &mut HashMap<String, String>) {
         None => return,
     };
     let rows: Vec<(String, String)> = {
-        let mut stmt = match con.prepare("SELECT id, title FROM session WHERE time_archived IS NULL")
-        {
-            Ok(s) => s,
-            Err(_) => return,
-        };
+        let mut stmt =
+            match con.prepare("SELECT id, title FROM session WHERE time_archived IS NULL") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
         let mapped = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
         });
         match mapped {
             Ok(m) => m.flatten().collect(),
@@ -897,9 +973,9 @@ fn opencode_titles(out: &mut HashMap<String, String>) {
             continue;
         }
         // fall back to first user text part
-        if let Ok(mut pstmt) = con.prepare(
-            "SELECT data FROM part WHERE session_id=?1 ORDER BY time_created ASC",
-        ) {
+        if let Ok(mut pstmt) =
+            con.prepare("SELECT data FROM part WHERE session_id=?1 ORDER BY time_created ASC")
+        {
             if let Ok(prows) = pstmt.query_map([&sid], |r| r.get::<_, String>(0)) {
                 for data in prows.flatten() {
                     let d: serde_json::Value = match serde_json::from_str(&data) {
@@ -931,7 +1007,10 @@ fn hermes_titles(out: &mut HashMap<String, String>) {
         Err(_) => return,
     };
     let rows = stmt.query_map([], |r| {
-        Ok((row_id_to_string(r, 0), r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+        Ok((
+            row_id_to_string(r, 0),
+            r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        ))
     });
     let rows = match rows {
         Ok(r) => r,
@@ -976,7 +1055,10 @@ mod tests {
     fn short_model_strips_date_and_vendor() {
         assert_eq!(short_model("claude-sonnet-4-5-20250929"), "sonnet-4-5");
         assert_eq!(short_model("openai/gpt-5-codex"), "gpt-5-codex");
-        assert_eq!(short_model("deepseek-ai/deepseek-v4-pro"), "deepseek-v4-pro");
+        assert_eq!(
+            short_model("deepseek-ai/deepseek-v4-pro"),
+            "deepseek-v4-pro"
+        );
     }
 
     #[test]
@@ -1002,8 +1084,11 @@ mod tests {
 
     #[test]
     fn first_line_word_boundary() {
-        let s = first_line("hello world this is a fairly long single prompt line here now", 48)
-            .unwrap();
+        let s = first_line(
+            "hello world this is a fairly long single prompt line here now",
+            48,
+        )
+        .unwrap();
         assert!(s.len() <= 48);
         assert!(!s.ends_with(' '));
         assert_eq!(first_line("short", 48).unwrap(), "short");

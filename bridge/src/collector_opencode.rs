@@ -119,7 +119,10 @@ fn ms_to_epoch(v: Option<i64>) -> Option<f64> {
 /// live DB. Returns None on any error (never panics).
 fn open_ro(db: &Path) -> Option<Connection> {
     // file:<path>?immutable=1  — requires SQLITE_OPEN_URI. Forward-slashed path.
-    let uri = format!("file:{}?immutable=1", db.to_string_lossy().replace('\\', "/"));
+    let uri = format!(
+        "file:{}?immutable=1",
+        db.to_string_lossy().replace('\\', "/")
+    );
     Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -206,9 +209,9 @@ pub fn scan_opencode(store: &Arc<Store>) {
 
     let now = now_secs();
 
-    let mut stmt = match con.prepare(
-        "SELECT id, directory, time_created, time_updated, time_archived FROM session",
-    ) {
+    let mut stmt = match con
+        .prepare("SELECT id, directory, time_created, time_updated, time_archived FROM session")
+    {
         Ok(s) => s,
         Err(_) => return,
     };

@@ -7,9 +7,9 @@ use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
 };
-use http_body_util::BodyExt;          // for .collect()
+use http_body_util::BodyExt; // for .collect()
 use std::sync::Arc;
-use tower::ServiceExt;                 // for .oneshot()
+use tower::ServiceExt; // for .oneshot()
 
 // Pull in the crate under test.  Integration test files live outside `src/`
 // but Cargo links them against the crate, so we use its public API.
@@ -32,9 +32,7 @@ fn make_app() -> (axum::Router, Arc<Store>) {
 // ── Helper: build a request ───────────────────────────────────────────────────
 
 fn get_state(token: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method(Method::GET)
-        .uri("/state");
+    let mut builder = Request::builder().method(Method::GET).uri("/state");
     if let Some(t) = token {
         builder = builder.header("X-VibeMonitor-Token", t);
     }
@@ -83,8 +81,11 @@ async fn get_state_response_is_valid_json_with_sessions_array() {
 
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(v["sessions"].is_array(), "response must contain a 'sessions' array");
-    assert!(v["ts"].is_number(),       "response must contain a numeric 'ts'");
+    assert!(
+        v["sessions"].is_array(),
+        "response must contain a 'sessions' array"
+    );
+    assert!(v["ts"].is_number(), "response must contain a numeric 'ts'");
 }
 
 #[tokio::test]
@@ -103,11 +104,11 @@ async fn get_state_shows_session_added_to_store() {
 
     let (app, store) = make_app();
     store.upsert(Session {
-        id:            "sess-42".into(),
-        tool:          "claude".into(),
-        project:       "myproj".into(),
+        id: "sess-42".into(),
+        tool: "claude".into(),
+        project: "myproj".into(),
         last_activity: 1_700_000_000.0,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
@@ -134,11 +135,11 @@ async fn get_state_fresh_session_appears_in_response() {
         .as_secs_f64();
 
     store.upsert(Session {
-        id:            "fresh-session".into(),
-        tool:          "claude".into(),
-        project:       "demo".into(),
+        id: "fresh-session".into(),
+        tool: "claude".into(),
+        project: "demo".into(),
         last_activity: now,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
@@ -185,11 +186,11 @@ async fn post_hook_stop_event_does_not_mark_waiting() {
         .as_secs_f64();
 
     store.upsert(Session {
-        id:            "hook-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "hook-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
@@ -203,7 +204,10 @@ async fn post_hook_stop_event_does_not_mark_waiting() {
 
     let snap = store.snapshot();
     assert_eq!(snap.len(), 1);
-    assert!(!snap[0].waiting, "Stop event must NOT mark session as waiting");
+    assert!(
+        !snap[0].waiting,
+        "Stop event must NOT mark session as waiting"
+    );
     assert!(snap[0].waiting_since.is_none());
 }
 
@@ -219,11 +223,11 @@ async fn post_hook_notification_event_marks_session_waiting() {
         .as_secs_f64();
 
     store.upsert(Session {
-        id:            "notif-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "notif-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
@@ -236,7 +240,10 @@ async fn post_hook_notification_event_marks_session_waiting() {
     app.oneshot(req).await.unwrap();
 
     let snap = store.snapshot();
-    assert!(snap[0].waiting, "Notification event should mark session as waiting");
+    assert!(
+        snap[0].waiting,
+        "Notification event should mark session as waiting"
+    );
 }
 
 #[tokio::test]
@@ -251,11 +258,11 @@ async fn post_hook_uses_session_id_field_as_fallback() {
         .as_secs_f64();
 
     store.upsert(Session {
-        id:            "alt-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "alt-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
@@ -269,7 +276,10 @@ async fn post_hook_uses_session_id_field_as_fallback() {
     app.oneshot(req).await.unwrap();
 
     let snap = store.snapshot();
-    assert!(snap[0].waiting, "sessionId field should be used when id is absent");
+    assert!(
+        snap[0].waiting,
+        "sessionId field should be used when id is absent"
+    );
 }
 
 #[tokio::test]
@@ -284,11 +294,11 @@ async fn post_hook_uses_hook_event_name_as_fallback() {
         .as_secs_f64();
 
     store.upsert(Session {
-        id:            "evt-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "evt-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
@@ -317,11 +327,11 @@ async fn post_hook_unknown_event_does_not_mark_waiting() {
         .as_secs_f64();
 
     store.upsert(Session {
-        id:            "boring-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "boring-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
@@ -367,11 +377,11 @@ async fn post_ack_clears_waiting_state() {
         .as_secs_f64();
 
     store.upsert(Session {
-        id:            "ack-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "ack-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now,
-        waiting:       true,
+        waiting: true,
         waiting_since: Some(now - 5.0),
         active_turn: false,
     });
@@ -381,7 +391,10 @@ async fn post_ack_clears_waiting_state() {
 
     let snap = store.snapshot();
     assert!(!snap[0].waiting, "ack should clear the waiting flag");
-    assert!(snap[0].waiting_since.is_none(), "ack should clear waiting_since");
+    assert!(
+        snap[0].waiting_since.is_none(),
+        "ack should clear waiting_since"
+    );
 }
 
 #[tokio::test]
@@ -408,33 +421,33 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
 
     // Idle session: last_activity 200 s ago (> WORKING_SEC=60)
     store.upsert(Session {
-        id:            "idle-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "idle-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now - 200.0,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
 
     // Working session: last_activity right now (< WORKING_SEC=60)
     store.upsert(Session {
-        id:            "working-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "working-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now,
-        waiting:       false,
+        waiting: false,
         waiting_since: None,
         active_turn: false,
     });
 
     // Waiting session
     store.upsert(Session {
-        id:            "waiting-sess".into(),
-        tool:          "claude".into(),
-        project:       "p".into(),
+        id: "waiting-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
         last_activity: now - 30.0,
-        waiting:       true,
+        waiting: true,
         waiting_since: Some(now - 10.0),
         active_turn: false,
     });
@@ -449,6 +462,8 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
     assert!(sessions.len() >= 2);
 
     // First element must be "waiting"
-    assert_eq!(sessions[0]["status"], "waiting",
-        "waiting sessions should sort first");
+    assert_eq!(
+        sessions[0]["status"], "waiting",
+        "waiting sessions should sort first"
+    );
 }

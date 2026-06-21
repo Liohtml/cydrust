@@ -12,9 +12,9 @@ use std::{
 #[derive(Default)]
 pub struct Shared {
     pub claude_usage: UsageInfo,
-    pub codex_usage:  UsageInfo,
-    pub metrics:      Metrics,
-    pub titles:       HashMap<String, String>,
+    pub codex_usage: UsageInfo,
+    pub metrics: Metrics,
+    pub titles: HashMap<String, String>,
 }
 
 fn now_secs() -> f64 {
@@ -36,16 +36,21 @@ pub struct Store {
 
 impl Store {
     pub fn new() -> Self {
-        Self { inner: RwLock::new(Inner::default()) }
+        Self {
+            inner: RwLock::new(Inner::default()),
+        }
     }
 
     pub fn upsert(&self, session: Session) {
         let mut g = self.inner.write().unwrap();
-        let existing = g.sessions.entry(session.id.clone()).or_insert_with(|| session.clone());
+        let existing = g
+            .sessions
+            .entry(session.id.clone())
+            .or_insert_with(|| session.clone());
         existing.last_activity = existing.last_activity.max(session.last_activity);
         existing.project = session.project;
         existing.tool = session.tool;
-        existing.active_turn = session.active_turn;   // collectors recompute each scan
+        existing.active_turn = session.active_turn; // collectors recompute each scan
         g.last_scan = now_secs();
     }
 
@@ -66,7 +71,13 @@ impl Store {
     }
 
     pub fn snapshot(&self) -> Vec<Session> {
-        self.inner.read().unwrap().sessions.values().cloned().collect()
+        self.inner
+            .read()
+            .unwrap()
+            .sessions
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub fn last_scan(&self) -> f64 {
@@ -76,7 +87,8 @@ impl Store {
     /// Reaper: drop sessions whose last activity is older than `gone_ttl`.
     pub fn remove_gone(&self, now: f64, gone_ttl: f64) {
         let mut g = self.inner.write().unwrap();
-        g.sessions.retain(|_, s| (now - s.last_activity) <= gone_ttl);
+        g.sessions
+            .retain(|_, s| (now - s.last_activity) <= gone_ttl);
     }
 }
 
@@ -87,13 +99,13 @@ mod tests {
 
     fn session(id: &str, last_activity: f64) -> Session {
         Session {
-            id:            id.into(),
-            tool:          "claude".into(),
-            project:       "test-project".into(),
+            id: id.into(),
+            tool: "claude".into(),
+            project: "test-project".into(),
             last_activity,
-            waiting:       false,
+            waiting: false,
             waiting_since: None,
-            active_turn:   false,
+            active_turn: false,
         }
     }
 
@@ -130,24 +142,27 @@ mod tests {
         let after = now_secs();
         let ls = store.last_scan();
         assert!(ls >= before, "last_scan {ls} should be >= {before}");
-        assert!(ls <= after,  "last_scan {ls} should be <= {after}");
+        assert!(ls <= after, "last_scan {ls} should be <= {after}");
     }
 
     #[test]
     fn upsert_keeps_max_last_activity() {
         let store = Store::new();
         store.upsert(session("s1", 100.0));
-        store.upsert(session("s1", 50.0));  // older — must NOT win
+        store.upsert(session("s1", 50.0)); // older — must NOT win
         let snap = store.snapshot();
         assert_eq!(snap.len(), 1);
-        assert_eq!(snap[0].last_activity, 100.0, "should keep the higher timestamp");
+        assert_eq!(
+            snap[0].last_activity, 100.0,
+            "should keep the higher timestamp"
+        );
     }
 
     #[test]
     fn upsert_advances_last_activity_when_newer() {
         let store = Store::new();
         store.upsert(session("s1", 100.0));
-        store.upsert(session("s1", 200.0));  // newer — must win
+        store.upsert(session("s1", 200.0)); // newer — must win
         let snap = store.snapshot();
         assert_eq!(snap[0].last_activity, 200.0);
     }
@@ -157,17 +172,17 @@ mod tests {
         let store = Store::new();
         store.upsert(session("s1", 1.0));
         let updated = Session {
-            id:            "s1".into(),
-            tool:          "codex".into(),
-            project:       "new-project".into(),
+            id: "s1".into(),
+            tool: "codex".into(),
+            project: "new-project".into(),
             last_activity: 2.0,
-            waiting:       false,
+            waiting: false,
             waiting_since: None,
-            active_turn:   false,
+            active_turn: false,
         };
         store.upsert(updated);
         let snap = store.snapshot();
-        assert_eq!(snap[0].tool,    "codex");
+        assert_eq!(snap[0].tool, "codex");
         assert_eq!(snap[0].project, "new-project");
     }
 
@@ -254,4 +269,3 @@ mod tests {
         assert!(snap[0].waiting_since.is_none());
     }
 }
-

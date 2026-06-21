@@ -44,9 +44,9 @@ fn expected_project(dir_name: &str) -> String {
 #[test]
 fn project_name_extracted_from_last_hyphen_segment() {
     assert_eq!(expected_project("foo-bar-baz"), "baz");
-    assert_eq!(expected_project("myproject"),   "myproject");
-    assert_eq!(expected_project("a-b"),         "b");
-    assert_eq!(expected_project("single"),      "single");
+    assert_eq!(expected_project("myproject"), "myproject");
+    assert_eq!(expected_project("a-b"), "b");
+    assert_eq!(expected_project("single"), "single");
 }
 
 #[test]
@@ -73,20 +73,20 @@ fn manual_scan_populates_store_correctly() {
 
     let sessions = vec![
         Session {
-            id:            "session-alpha".into(),
-            tool:          "claude".into(),
-            project:       "alpha".into(),
+            id: "session-alpha".into(),
+            tool: "claude".into(),
+            project: "alpha".into(),
             last_activity: now,
-            waiting:       false,
+            waiting: false,
             waiting_since: None,
             active_turn: false,
         },
         Session {
-            id:            "session-beta".into(),
-            tool:          "claude".into(),
-            project:       "beta".into(),
+            id: "session-beta".into(),
+            tool: "claude".into(),
+            project: "beta".into(),
             last_activity: now - 30.0,
-            waiting:       false,
+            waiting: false,
             waiting_since: None,
             active_turn: false,
         },
@@ -167,8 +167,8 @@ fn scan_single_jsonl_creates_one_session() {
 
     let snap = store.snapshot();
     assert_eq!(snap.len(), 1);
-    assert_eq!(snap[0].id,      "session-001");
-    assert_eq!(snap[0].tool,    "claude");
+    assert_eq!(snap[0].id, "session-001");
+    assert_eq!(snap[0].tool, "claude");
     assert_eq!(snap[0].project, "myproject"); // last segment after '-'
 }
 
@@ -198,9 +198,9 @@ fn scan_ignores_non_jsonl_files() {
     let proj_dir = tmp.path().join("proj-x");
     fs::create_dir_all(&proj_dir).unwrap();
     // These should be ignored
-    fs::write(proj_dir.join("readme.md"),  b"# hi").unwrap();
-    fs::write(proj_dir.join("data.json"),  b"{}").unwrap();
-    fs::write(proj_dir.join("notes.txt"),  b"notes").unwrap();
+    fs::write(proj_dir.join("readme.md"), b"# hi").unwrap();
+    fs::write(proj_dir.join("data.json"), b"{}").unwrap();
+    fs::write(proj_dir.join("notes.txt"), b"notes").unwrap();
     // Only this should be picked up
     create_jsonl(&proj_dir, "real-session");
 

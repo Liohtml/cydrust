@@ -100,7 +100,9 @@ impl Default for RemoteStore {
 
 impl RemoteStore {
     pub fn new() -> Self {
-        RemoteStore { inner: RwLock::new(HashMap::new()) }
+        RemoteStore {
+            inner: RwLock::new(HashMap::new()),
+        }
     }
 
     /// Upsert all sessions from one node's push, stamping each with `now`.
@@ -251,7 +253,10 @@ mod tests {
     #[test]
     fn rows_drops_entries_older_than_ttl() {
         let store = RemoteStore::new();
-        store.merge(from_session_rows(&[row("a", "p", Status::Idle)], "h"), 100.0);
+        store.merge(
+            from_session_rows(&[row("a", "p", Status::Idle)], "h"),
+            100.0,
+        );
         // 40s later with a 30s TTL → gone.
         assert!(store.rows(140.0, 30.0).is_empty());
     }
@@ -267,7 +272,10 @@ mod tests {
             100.0,
         );
         // Second push for the same node reports only "a" now.
-        store.merge(from_session_rows(&[row("a", "p", Status::Working)], "h"), 101.0);
+        store.merge(
+            from_session_rows(&[row("a", "p", Status::Working)], "h"),
+            101.0,
+        );
         let rows = store.rows(101.0, 30.0);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "a");
@@ -277,10 +285,19 @@ mod tests {
     #[test]
     fn merge_keeps_distinct_nodes_separate() {
         let store = RemoteStore::new();
-        store.merge(from_session_rows(&[row("a", "p", Status::Idle)], "h1"), 100.0);
-        store.merge(from_session_rows(&[row("a", "p", Status::Idle)], "h2"), 100.0);
-        let mut projects: Vec<String> =
-            store.rows(100.0, 30.0).into_iter().map(|r| r.project).collect();
+        store.merge(
+            from_session_rows(&[row("a", "p", Status::Idle)], "h1"),
+            100.0,
+        );
+        store.merge(
+            from_session_rows(&[row("a", "p", Status::Idle)], "h2"),
+            100.0,
+        );
+        let mut projects: Vec<String> = store
+            .rows(100.0, 30.0)
+            .into_iter()
+            .map(|r| r.project)
+            .collect();
         projects.sort();
         assert_eq!(projects, vec!["h1/p".to_string(), "h2/p".to_string()]);
     }

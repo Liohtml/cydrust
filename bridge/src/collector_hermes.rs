@@ -117,7 +117,10 @@ fn sec(v: Option<f64>) -> Option<f64> {
 /// Open the db strictly read-only + immutable via a URI so we never lock/corrupt a
 /// live DB. Returns None on any error (never panics).
 fn open_ro(db: &Path) -> Option<Connection> {
-    let uri = format!("file:{}?immutable=1", db.to_string_lossy().replace('\\', "/"));
+    let uri = format!(
+        "file:{}?immutable=1",
+        db.to_string_lossy().replace('\\', "/")
+    );
     Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -173,11 +176,11 @@ pub fn scan_hermes(store: &Arc<Store>) {
 
     let now = now_secs();
 
-    let mut stmt =
-        match con.prepare("SELECT id, cwd, started_at, ended_at, archived FROM sessions") {
-            Ok(s) => s,
-            Err(_) => return,
-        };
+    let mut stmt = match con.prepare("SELECT id, cwd, started_at, ended_at, archived FROM sessions")
+    {
+        Ok(s) => s,
+        Err(_) => return,
+    };
 
     // (id, cwd, started_at, ended_at, archived)
     let rows = stmt.query_map([], |row| {
