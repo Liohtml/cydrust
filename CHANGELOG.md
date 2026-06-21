@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Bridge** — Multi-provider session collectors: Codex (`~/.codex/sessions/`), OpenCode (`opencode.db`), Hermes (`state.db`) — all opened read-only/immutable so they never contend with live processes
+- **Bridge** — `active_turn` field on `Session`: keeps a session "Working" even when the transcript mtime briefly goes stale mid-turn (tail-read heuristic for Claude, event markers for Codex, message role for OpenCode/Hermes)
+- **Bridge** — `usage.rs`: `claude_usage()` probes Anthropic API with OAuth token; `codex_usage()` reads freshest `token_count` rate-limit snapshot; `capacity()` returns go/pace/throttle verdict
+- **Bridge** — `metrics.rs`: `summarize_metrics()` — today's per-provider token/cost/model rollup for all 4 providers; `build_titles()` — first substantive user prompt per session (noise-filtered) as summary title
+- **Bridge** — `/state` response extended: `capacity`, `metrics`, session `summary` field; `dedup by (tool, project)` collapses multiple sessions for the same project to one card
+- **Bridge** — 4 background threads: session scan (2s), usage gauges (60s), metrics (120s), titles (120s); `Shared` struct separates slow computed data from the fast session store
+- **Bridge** — `serial_bridge`: reconnect loop (survives device unplug/replug); non-blocking ACK/log read; DTR+RTS lowered on open to prevent ESP32 reset
+- **Bridge** — Optional `[pricing]` table in `config.toml` for per-model USD cost calculation
+- **Firmware** — METRICS tab (4th tab): per-model token/cost rows with provider badge, share bar, and % label; totals line; `parse_metrics()` / `render_metrics()`
+- **Firmware** — `trunc_bytes()`: UTF-8-safe string truncation (prevents panic on em-dashes, accented chars, CJK in model names / session summaries)
 - **Firmware** — Session detail overlay (`View::Detail`): shows truncated id, human-readable age, wait duration, word-wrapped summary
 - **Firmware** — Provider icons: Claude, Codex, OpenCode, and Hermes 18×18 px logos alpha-composited onto display (`icons.rs`)
 - **Firmware** — `provider_meta()` helper: centralised name + accent colour lookup for all four providers

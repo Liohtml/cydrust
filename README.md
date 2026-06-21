@@ -33,22 +33,26 @@
 
 ## Features
 
-- **Real-time session cards** — up to 8 concurrent Claude Code sessions rendered on a 320×240 ST7789 LCD at up to 5 fps
+- **Real-time session cards** — up to 8 concurrent sessions from Claude Code, Codex, OpenCode, and Hermes rendered on a 320×240 ST7789 LCD at up to 5 fps
+- **Four providers** — Claude, Codex, OpenCode, and Hermes all tracked simultaneously; sessions deduplicated per project across providers
 - **Three status states** with distinct colours: Working (green `#4ADE80`), Waiting (amber `#F5A623`), Idle (grey)
-- **Session detail overlay** — tap any card to see the full session view: truncated id, human-readable age (`12s ago` / `5m ago`), waiting duration, and a word-wrapped summary message
-- **Provider icons** — 18×18 pixel logos for Claude, Codex, OpenCode, and Hermes alpha-composited directly onto the display; each icon is a hand-crafted RGBA pixel array blit via `draw_badge()`
-- **Full token-usage tab** — dedicated USAGE screen showing current-period percentage, weekly burn rate, burn-per-hour, leftover percentage, and ETA clock for both Claude and Codex
-- **NVS-persisted settings** — SETTINGS tab lets you adjust backlight brightness (via LEDC PWM, 10–100 %), sleep timer (off/1/5/15/30 min), and dark/light theme; values survive power cycles
-- **Dual transport** — connect over WiFi for a truly wireless monitor, or use USB serial for zero-config corporate networks
-- **Offline detection** — a red banner fires after 3 missed polls (WiFi) or 6 seconds of silence (USB), then self-heals
-- **Flicker-free rendering** — data-only refreshes repaint each element in-place without a full screen clear; full clears only happen on tab/view switches
-- **Hook integration** — Claude Code `Notification`/`Stop` hook events flip a session to *Waiting*; `POST /ack` clears it
-- **Session sorting** — Waiting → Working → Idle, so what needs attention is always on top
-- **4-hour TTL pruning** — stale sessions aged out automatically; no manual cleanup needed
-- **Dark / light theme** — switchable from the SETTINGS tab; colour functions adapt every rendered element
-- **Zero heap allocation on device** — firmware uses `heapless::Vec` and `heapless::String`; no `alloc` OOM surprises
-- **Extended serial protocol** — `serial_bridge` emits short-key compact objects (`i`, `a`, `ws`, `s`, `p`, `r`, `wp`, `b`, `lo`, `e`) keeping payloads well under the ESP32 UART FIFO limit even with full usage data
+- **Active-turn detection** — bridge infers mid-turn state from transcript tails (Claude), event markers (Codex), and message roles (OpenCode/Hermes) so a session stays "Working" even when the file hasn't been written yet
+- **Session detail overlay** — tap any card for the full view: id, age, wait duration, and the session's first substantive prompt as a summary
+- **Provider icons** — 18×18 px logos for all four providers alpha-composited onto the display via `draw_badge()`
+- **USAGE tab** — live rate-limit gauges (5h % used, weekly %, burn/hr, leftover %, ETA clock) for Claude and Codex; sourced from the Anthropic API and Codex session files
+- **METRICS tab** — today's per-model token/cost breakdown (up to 6 models); share bar + % label; totals line with optional USD sum; badge icon per provider row
+- **NVS-persisted settings** — SETTINGS tab: backlight brightness (LEDC PWM, 10–100 %), sleep timer, dark/light theme; all survive power cycles
+- **Dual transport** — WiFi for wireless operation, USB serial for zero-config corporate networks; `serial_bridge` reconnects automatically on device unplug/replug
+- **Offline detection** — red banner fires after 3 missed polls (WiFi) or 6 s silence (USB), then self-heals
+- **Flicker-free rendering** — data refreshes repaint in-place; full screen clears only on tab/view switches
+- **Hook integration** — Claude Code `Notification` hook flips a session to *Waiting*; `POST /ack` clears it
+- **Session sorting** — Waiting → Working → Idle, newest first within each group
+- **4-hour TTL pruning** — stale sessions expired automatically; no manual cleanup needed
+- **Dark / light theme** — switchable from SETTINGS; colour functions adapt every rendered element at runtime
+- **Zero heap allocation on device** — firmware uses `heapless::Vec` / `heapless::String`; no `alloc` OOM surprises
+- **Compact serial protocol** — `serial_bridge` emits short-key JSON (`i`, `a`, `ws`, `s`, `p`, `r`, `wp`, `b`, `lo`, `e`, plus `metrics`) well under the ESP32 UART FIFO limit
 - **Auth token** — every bridge request requires `X-VibeMonitor-Token`; the device never exposes unauthenticated data
+- **Capacity verdict** — `/state` includes a `capacity` object (`go` / `pace` / `throttle`) advising whether it's safe to start another agent
 
 ---
 
