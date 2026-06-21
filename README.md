@@ -36,7 +36,7 @@
 - **Real-time session cards** — up to 8 concurrent Claude Code sessions rendered on a 320×240 ST7789 LCD at up to 5 fps
 - **Three status states** with distinct colours: Working (green `#4ADE80`), Waiting (amber `#F5A623`), Idle (grey)
 - **Session detail overlay** — tap any card to see the full session view: truncated id, human-readable age (`12s ago` / `5m ago`), waiting duration, and a word-wrapped summary message
-- **Provider icons** — 18×18 pixel Claude and Codex logos alpha-composited directly onto the display (ported from the original LVGL firmware)
+- **Provider icons** — 18×18 pixel logos for Claude, Codex, OpenCode, and Hermes alpha-composited directly onto the display; each icon is a hand-crafted RGBA pixel array blit via `draw_badge()`
 - **Full token-usage tab** — dedicated USAGE screen showing current-period percentage, weekly burn rate, burn-per-hour, leftover percentage, and ETA clock for both Claude and Codex
 - **NVS-persisted settings** — SETTINGS tab lets you adjust backlight brightness (via LEDC PWM, 10–100 %), sleep timer (off/1/5/15/30 min), and dark/light theme; values survive power cycles
 - **Dual transport** — connect over WiFi for a truly wireless monitor, or use USB serial for zero-config corporate networks
@@ -550,17 +550,30 @@ fn c_codex()  -> Rgb565 { Rgb565::new(20, 34, 30) }  // #A78BFA Codex purple
 fn c_work()   -> Rgb565 { Rgb565::new(9,  55, 16) }  // #4ADE80 working green
 fn c_wait()   -> Rgb565 { Rgb565::new(30, 41,  4) }  // #F5A623 waiting amber
 fn c_offline()-> Rgb565 { Rgb565::new(28, 18,  9) }  // #E5484D offline red
+
+// Provider accent colours used in detail overlay headers
+const BRAND_OPENCODE: Rgb565 = Rgb565::new(2, 46, 20);  // teal-green
+const BRAND_HERMES:   Rgb565 = Rgb565::new(7, 32, 30);  // blue
 ```
 
 `Rgb565::new(r, g, b)` takes 5-bit R, 6-bit G, 5-bit B values. Use an online RGB565 converter to map hex colours. To add a light theme, check `Settings.dark` inside each function and return an alternate value.
 
 ### Adding support for other AI tools
 
-The `tool` field in `Session` is currently always `"claude"` (set by `collector.rs`). To track Codex/Cursor/etc.:
+The firmware currently renders native icons for four providers via `draw_badge()` in `firmware/src/main.rs`:
 
-1. Add a second collector in `bridge/src/collector.rs` that scans the relevant session directory
-2. Set `tool` to `"codex"` (or another string) on the `Session` struct
-3. The firmware already handles `tool == "codex"` — it renders a purple dot instead of orange
+| `tool` string | Icon | Accent colour |
+|--------------|------|--------------|
+| `"claude"` (default) | Claude pixel logo | Orange `#D97757` |
+| `"codex"` | Codex pixel logo | Purple `#A78BFA` |
+| `"opencode"` | OpenCode terminal logo | Teal-green |
+| `"hermes"` | Hermes gradient logo | Blue |
+
+To add a fifth provider:
+
+1. Add a collector in `bridge/src/collector.rs` that scans the relevant session directory and sets the `tool` field
+2. Add an 18×18 px RGBA pixel array to `firmware/src/icons.rs` (use a 2-bit alpha: `0` = transparent, `255` = opaque)
+3. Extend `draw_badge()` and `provider_meta()` in `firmware/src/main.rs` to dispatch to the new icon and return the correct name + accent colour
 
 ---
 

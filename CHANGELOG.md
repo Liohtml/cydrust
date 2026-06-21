@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Firmware** — Session detail overlay (`View::Detail`): shows truncated id, human-readable age, wait duration, word-wrapped summary
-- **Firmware** — Provider icons: Claude and Codex 18×18 px logos alpha-composited onto display (`icons.rs`, ported from original LVGL firmware)
+- **Firmware** — Provider icons: Claude, Codex, OpenCode, and Hermes 18×18 px logos alpha-composited onto display (`icons.rs`)
+- **Firmware** — `provider_meta()` helper: centralised name + accent colour lookup for all four providers
+- **Firmware** — `draw_badge()`: unified icon dispatch — real pixel logos for all providers (no more monogram fallbacks)
 - **Firmware** — Full token usage model (`Usage` struct): `pct`, `reset_sec`, `week_pct`, `week_reset_sec`, `will_exhaust`, `burn_per_hr`, `leftover_pct`, `eta_clock`
 - **Firmware** — NVS-persisted `Settings` struct: brightness (LEDC PWM, 10–100 %), sleep timer (off/1/5/15/30 min), dark/light theme
 - **Firmware** — Functional SETTINGS tab with interactive brightness and sleep controls
