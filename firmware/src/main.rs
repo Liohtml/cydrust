@@ -1,7 +1,7 @@
 use anyhow::Result;
 use embedded_graphics::{
     mono_font::{
-        ascii::{FONT_7X13, FONT_7X13_BOLD, FONT_9X15, FONT_9X15_BOLD},
+        ascii::{FONT_6X10, FONT_7X13, FONT_7X13_BOLD, FONT_9X15, FONT_9X15_BOLD},
         MonoFont, MonoTextStyle,
     },
     pixelcolor::Rgb565,
@@ -44,7 +44,7 @@ mod icons;
 // ── Data model ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Tab { Sessions, Usage, Settings }
+enum Tab { Sessions, Usage, Metrics, Settings }
 
 // Sessions tab can show the list or a single-session detail overlay.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,11 +90,34 @@ impl Default for Usage {
     }
 }
 
+// One model's token/cost usage today (Metrics tab shows the top models,
+// so Opus/Sonnet/Haipku etc. each get their own row instead of collapsing
+// to a single per-provider label).
+#[derive(Debug, Default, Clone, PartialEq)]
+struct ModelRow {
+    provider: HString<10>,   // "claude" / "codex" / "opencode" / "hermes" (for the badge)
+    model:    HString<16>,
+    tokens:   f32,           // f32 ok for "M/k" display
+    usd:      f32,
+    has_usd:  bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Metrics {
+    models:         heapless::Vec<ModelRow, 6>,   // top models by tokens (desc)
+    total_tokens:   f32,
+    total_usd:      f32,
+    has_usd:        bool,
+    usd_complete:   bool,
+    total_sessions: i32,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 struct DisplayState {
     sessions: heapless::Vec<SessionRow, 8>,
     claude:   Usage,
     codex:    Usage,
+    metrics:  Metrics,
     offline:  bool,
 }
 
@@ -141,16 +164,16 @@ fn parse_state(text: &str) -> Option<DisplayState> {
                                 _         => SessionStatus::Idle,
                             };
                             let mut p: HString<32> = HString::new();
-                            let _ = p.push_str(&project[..project.len().min(32)]);
+                            let _ = p.push_str(trunc_bytes(project, 32));
                             let mut t: HString<8> = HString::new();
-                            let _ = t.push_str(&tool_s[..tool_s.len().min(8)]);
+                            let _ = t.push_str(trunc_bytes(tool_s, 8));
                             let mut idh: HString<16> = HString::new();
                             if let Some(idv) = extract_str(obj, "i") {
-                                let _ = idh.push_str(&idv[..idv.len().min(16)]);
+                                let _ = idh.push_str(trunc_bytes(idv, 16));
                             }
                             let mut sh: HString<80> = HString::new();
                             if let Some(sv) = extract_str(obj, "s") {
-                                let _ = sh.push_str(&sv[..sv.len().min(80)]);
+                                let _ = sh.push_str(trunc_bytes(sv, 80));
                             }
                             let age  = num_field(obj, "a").map(|v| v as i32).unwrap_or(-1);
                             let wsec = num_field(obj, "ws").map(|v| v as i32).unwrap_or(-1);
@@ -168,9 +191,57 @@ fn parse_state(text: &str) -> Option<DisplayState> {
             }
         }
     }
-    ds.claude = parse_provider(text, "\"claude\":{");
-    ds.codex  = parse_provider(text, "\"codex\":{");
+    ds.claude  = parse_provider(text, "\"claude\":{");
+    ds.codex   = parse_provider(text, "\"codex\":{");
+    ds.metrics = parse_metrics(text);
     Some(ds)
+}
+
+fn parse_metrics(text: &str) -> Metrics {
+    let mut m = Metrics::default();
+    let marker = "\"metrics\":{";
+    let Some(pos) = text.find(marker) else { return m; };
+    let rest = &text[pos + marker.len()..];   // after the opening '{'
+    let mut depth = 1i32;
+    let mut ci = rest.len();
+    for (i, c) in rest.char_indices() {
+        match c { '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { ci = i; break; } }, _ => {} }
+    }
+    let mobj = &rest[..ci];
+
+    // models array  "m":[ {"p","n","t","u"}, .. ]  (sorted by tokens desc by the bridge)
+    if let Some(apos) = mobj.find("\"m\":[") {
+        let arr = &mobj[apos + 5..];
+        let mut d2 = 0i32;
+        let mut start = None;
+        for (i, c) in arr.char_indices() {
+            match c {
+                '{' => { if d2 == 0 { start = Some(i); } d2 += 1; }
+                '}' => {
+                    d2 -= 1;
+                    if d2 == 0 {
+                        if let Some(s) = start {
+                            let o = &arr[s..=i];
+                            let mut mr = ModelRow::default();
+                            if let Some(p)  = extract_str(o, "p") { let _ = mr.provider.push_str(trunc_bytes(p, 10)); }
+                            if let Some(n)  = extract_str(o, "n") { let _ = mr.model.push_str(trunc_bytes(n, 16)); }
+                            if let Some(t)  = num_field(o, "t") { mr.tokens = t; }
+                            if let Some(u)  = num_field(o, "u") { mr.usd = u; mr.has_usd = true; }
+                            let _ = m.models.push(mr);
+                        }
+                        start = None;
+                    }
+                }
+                ']' => { if d2 == 0 { break; } }
+                _ => {}
+            }
+        }
+    }
+    if let Some(v) = num_field(mobj, "tt") { m.total_tokens = v; }
+    if let Some(v) = num_field(mobj, "tu") { m.total_usd = v; m.has_usd = true; }
+    if let Some(v) = num_field(mobj, "ts") { m.total_sessions = v as i32; }
+    if mobj.contains("\"uc\":true") { m.usd_complete = true; }
+    m
 }
 
 // Scan a numeric field within a provider object slice. Uses a boundary-prefixed
@@ -215,7 +286,7 @@ fn parse_provider(text: &str, marker: &str) -> Usage {
     if let Some(v) = num_field(obj, "b")  { u.burn_per_hr = v; }
     if let Some(v) = num_field(obj, "lo") { u.leftover_pct = v; }
     if let Some(e) = extract_str(obj, "e") {
-        let _ = u.eta_clock.push_str(&e[..e.len().min(12)]);
+        let _ = u.eta_clock.push_str(trunc_bytes(e, 12));
     }
     u
 }
@@ -225,6 +296,16 @@ fn extract_str<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
     let start  = obj.find(&search)? + search.len();
     let end    = obj[start..].find('"')? + start;
     Some(&obj[start..end])
+}
+
+// Truncate to at most `max_bytes`, never splitting a multi-byte UTF-8 char.
+// (Plain `&s[..n]` panics on a non-char-boundary — real risk with model names
+// / summaries that contain em-dashes, accents, CJK, etc.)
+fn trunc_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes { return s; }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    &s[..end]
 }
 
 // ── WiFi fetch ───────────────────────────────────────────────────────────────
@@ -350,9 +431,10 @@ fn provider_meta(tool: &str) -> (&'static str, Rgb565) {
 
 fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(d: &mut D, active: Tab) {
     let tabs: &[(&str, i32, u32, Tab)] = &[
-        ("SESSIONS", 53,  107, Tab::Sessions),
-        ("USAGE",    160, 106, Tab::Usage),
-        ("SETTINGS", 267, 107, Tab::Settings),
+        ("SESSIONS", 40,  79, Tab::Sessions),
+        ("USAGE",    120, 79, Tab::Usage),
+        ("METRICS",  200, 79, Tab::Metrics),
+        ("SETTINGS", 280, 79, Tab::Settings),
     ];
     let mut x = 1i32;
     for (label, cx, w, tab) in tabs {
@@ -390,8 +472,65 @@ fn render<D: DrawTarget<Color = Rgb565>>(
             },
         },
         Tab::Usage    => render_usage(display, ds),
+        Tab::Metrics  => render_metrics(display, &ds.metrics),
         Tab::Settings => render_settings(display, set),
     }
+}
+
+// "152.7M" / "84k" / "512"
+fn fmt_tokens(t: f32) -> String {
+    if t >= 1_000_000.0 { format!("{:.1}M", t / 1_000_000.0) }
+    else if t >= 1_000.0 { format!("{:.0}k", t / 1_000.0) }
+    else { format!("{:.0}", t) }
+}
+fn fmt_usd(u: f32) -> String { format!("${:.2}", u) }
+
+fn render_metrics<D: DrawTarget<Color = Rgb565>>(display: &mut D, m: &Metrics) {
+    fill(display, 0, 26, 320, 213, c_bg());   // body clear (metrics update slowly)
+
+    // Header: title + window label
+    txt(display, &FONT_9X15_BOLD, "METRICS", 8, 42, Alignment::Left, c_fg());
+    txt(display, &FONT_7X13, "today", 314, 42, Alignment::Right, c_dim());
+    fill(display, 0, 46, 320, 1, c_panel());
+
+    if m.models.is_empty() {
+        txt(display, &FONT_9X15, "no metrics yet", 160, 120, Alignment::Center, c_dim());
+        txt(display, &FONT_7X13, "(run a session)", 160, 142, Alignment::Center, c_dim());
+        return;
+    }
+
+    let total = if m.total_tokens > 0.0 { m.total_tokens } else { 1.0 };
+    // Per-model rows (top by tokens): badge + model + tokens/$ + share bar + %
+    for (i, r) in m.models.iter().take(6).enumerate() {
+        let y = 50 + (i as i32) * 27;
+        let (_pn, accent) = provider_meta(r.provider.as_str());
+        draw_badge(display, r.provider.as_str(), 6, y + 3);
+        txt(display, &FONT_7X13_BOLD, r.model.as_str(), 28, y + 11, Alignment::Left, accent);
+        let sub = if r.has_usd {
+            format!("{}  {}", fmt_tokens(r.tokens), fmt_usd(r.usd))
+        } else {
+            format!("{} tok", fmt_tokens(r.tokens))
+        };
+        txt(display, &FONT_6X10, &sub, 28, y + 22, Alignment::Left, c_dim());
+        // token-share bar (no pricing needed — answers "what's eating the budget")
+        let bx = 180i32; let bw: u32 = 110;
+        rfill(display, bx, y + 6, bw, 10, 3, c_panel());
+        let frac = (r.tokens / total).clamp(0.0, 1.0);
+        let fw = (frac * bw as f32) as u32;
+        if fw > 0 { rfill(display, bx, y + 6, fw, 10, 3, accent); }
+        let ps = format!("{}%", (frac * 100.0).round() as i32);
+        txt(display, &FONT_6X10, &ps, 314, y + 24, Alignment::Right, c_dim());
+    }
+
+    // Totals line
+    fill(display, 0, 215, 320, 1, c_panel());
+    let tu = if m.has_usd {
+        let mut s = fmt_usd(m.total_usd);
+        if !m.usd_complete { s.push('*'); }
+        s
+    } else { String::new() };
+    let ts = format!("{} tok  {} sess  {}", fmt_tokens(m.total_tokens), m.total_sessions, tu);
+    txt(display, &FONT_7X13, &ts, 8, 231, Alignment::Left, c_fg());
 }
 
 fn pct_str(u: &Usage, name: &str) -> String {
@@ -422,16 +561,17 @@ fn humanize_dur(sec: i32) -> String {
 // Greedy word-wrap into up to `max` slices of <= `cols` chars.
 fn wrap_lines(s: &str, cols: usize, max: usize) -> heapless::Vec<&str, 4> {
     let mut out: heapless::Vec<&str, 4> = heapless::Vec::new();
-    let bytes = s.as_bytes();
     let mut start = 0usize;
     while start < s.len() && out.len() < max {
         let mut end = (start + cols).min(s.len());
+        while end < s.len() && !s.is_char_boundary(end) { end -= 1; }   // char-safe
         if end < s.len() {
             if let Some(sp) = s[start..end].rfind(' ') { if sp > 0 { end = start + sp; } }
         }
         let _ = out.push(s[start..end].trim_end());
-        start = end;
-        while bytes.get(start) == Some(&b' ') { start += 1; }
+        let rest = &s[end..];
+        let skip = rest.len() - rest.trim_start_matches(' ').len();      // ASCII spaces
+        start = end + skip;
     }
     out
 }
@@ -459,13 +599,20 @@ fn render_sessions<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayS
                 let card_bg = if row.status == SessionStatus::Waiting { c_waitdk() } else { c_panel() };
                 rfill(display, 2, y, 316, 25, 4, card_bg);     // repaint clears old content
                 draw_badge(display, row.tool.as_str(), 5, y + 4);
-                txt(display, &FONT_7X13_BOLD, row.project.as_str(), 28, y + 17, Alignment::Left, c_fg());
                 let (sym, sc) = match row.status {
                     SessionStatus::Working => (">>",  c_work()),
                     SessionStatus::Waiting => ("!",   c_wait()),
                     SessionStatus::Idle    => ("Zzz", c_dim()),
                 };
-                txt(display, &FONT_9X15_BOLD, sym, 312, y + 17, Alignment::Right, sc);
+                if row.summary.is_empty() {
+                    txt(display, &FONT_7X13_BOLD, row.project.as_str(), 28, y + 17, Alignment::Left, c_fg());
+                } else {
+                    // project on top, summary/title beneath (small, dim)
+                    txt(display, &FONT_7X13_BOLD, row.project.as_str(), 28, y + 11, Alignment::Left, c_fg());
+                    let sm: String = row.summary.as_str().chars().take(40).collect();
+                    txt(display, &FONT_6X10, &sm, 28, y + 22, Alignment::Left, c_dim());
+                }
+                txt(display, &FONT_9X15_BOLD, sym, 312, y + 16, Alignment::Right, sc);
             } else {
                 fill(display, 2, y, 316, 25, c_bg());            // erase removed card
             }
@@ -945,8 +1092,9 @@ fn run() -> Result<()> {
                     set_brightness(&mut bl, settings.brightness);
                     prev = None;
                 } else if sy < 34 {
-                    active_tab = if sx < 107 { Tab::Sessions }
-                                 else if sx < 214 { Tab::Usage }
+                    active_tab = if sx < 80 { Tab::Sessions }
+                                 else if sx < 160 { Tab::Usage }
+                                 else if sx < 240 { Tab::Metrics }
                                  else { Tab::Settings };
                     view = View::List;
                 } else if active_tab == Tab::Sessions {
@@ -982,6 +1130,7 @@ fn run() -> Result<()> {
                     .map(|p| p.1 != active_tab || p.2 != view).unwrap_or(true);
                 let content_changed = prev.as_ref().map(|p| match active_tab {
                     Tab::Settings => p.3 != settings,
+                    Tab::Metrics  => p.0.metrics != ds.metrics,
                     _             => p.0 != ds,
                 }).unwrap_or(true);
                 if layout_changed || content_changed {
@@ -1005,7 +1154,7 @@ fn run() -> Result<()> {
             .spawn(move || {
                 use std::io::Read;
                 let stdin   = std::io::stdin();
-                let mut buf = [0u8; 1024];
+                let mut buf = [0u8; 2048];
                 let mut len = 0usize;
                 let mut tmp = [0u8; 128];
                 loop {
@@ -1063,8 +1212,9 @@ fn run() -> Result<()> {
                     set_brightness(&mut bl, settings.brightness);
                     prev = None;
                 } else if sy < 34 {
-                    active_tab = if sx < 107 { Tab::Sessions }
-                                 else if sx < 214 { Tab::Usage }
+                    active_tab = if sx < 80 { Tab::Sessions }
+                                 else if sx < 160 { Tab::Usage }
+                                 else if sx < 240 { Tab::Metrics }
                                  else { Tab::Settings };
                     view = View::List;
                 } else if active_tab == Tab::Sessions {
@@ -1102,6 +1252,7 @@ fn run() -> Result<()> {
                     .map(|p| p.1 != active_tab || p.2 != view).unwrap_or(true);
                 let content_changed = prev.as_ref().map(|p| match active_tab {
                     Tab::Settings => p.3 != settings,
+                    Tab::Metrics  => p.0.metrics != state.metrics,
                     _             => p.0 != state,
                 }).unwrap_or(true);
                 if layout_changed || content_changed {
