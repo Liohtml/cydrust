@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 1280px;
+      height: 640px;
+      background: #141414;
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* subtle grid */
+    .grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(217,119,87,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(217,119,87,0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+    }
+
+    /* ambient glow blobs */
+    .glow-orange {
+      position: absolute;
+      width: 560px; height: 560px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(217,119,87,0.18) 0%, transparent 70%);
+      top: -220px; left: -80px;
+      pointer-events: none;
+    }
+    .glow-purple {
+      position: absolute;
+      width: 420px; height: 420px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(167,139,250,0.16) 0%, transparent 70%);
+      bottom: -160px; right: 180px;
+      pointer-events: none;
+    }
+    .glow-green {
+      position: absolute;
+      width: 300px; height: 300px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(74,222,128,0.07) 0%, transparent 70%);
+      bottom: 0; left: 360px;
+      pointer-events: none;
+    }
+
+    /* corner brackets */
+    .corner { position: absolute; width: 24px; height: 24px; }
+    .corner-tl { top: 20px; left: 20px; border-top: 2px solid #D97757; border-left: 2px solid #D97757; }
+    .corner-tr { top: 20px; right: 20px; border-top: 2px solid #A78BFA; border-right: 2px solid #A78BFA; }
+    .corner-bl { bottom: 20px; left: 20px; border-bottom: 2px solid #A78BFA; border-left: 2px solid #A78BFA; }
+    .corner-br { bottom: 20px; right: 20px; border-bottom: 2px solid #D97757; border-right: 2px solid #D97757; }
+
+    /* ── LEFT PANEL ── */
+    .left {
+      position: absolute;
+      left: 72px; top: 0; bottom: 0; width: 600px;
+      display: flex; flex-direction: column; justify-content: center; gap: 22px;
+    }
+
+    .meta-row {
+      display: flex; align-items: center; gap: 12px;
+    }
+    .live-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #4ADE80;
+      box-shadow: 0 0 0 3px rgba(74,222,128,0.2), 0 0 12px rgba(74,222,128,0.6);
+    }
+    .version-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 600;
+      color: #4ADE80;
+      background: rgba(74,222,128,0.08);
+      border: 1px solid rgba(74,222,128,0.25);
+      padding: 3px 10px; border-radius: 4px;
+      letter-spacing: 0.08em;
+    }
+    .lang-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 600;
+      color: #D97757;
+      background: rgba(217,119,87,0.08);
+      border: 1px solid rgba(217,119,87,0.25);
+      padding: 3px 10px; border-radius: 4px;
+      letter-spacing: 0.08em;
+    }
+
+    h1 {
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 900;
+      font-size: 100px;
+      letter-spacing: 0.06em;
+      line-height: 1;
+      background: linear-gradient(130deg, #D97757 0%, #E8A07A 45%, #C4A0FF 75%, #A78BFA 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      font-size: 21px; font-weight: 400;
+      color: #777;
+      letter-spacing: 0.01em;
+    }
+
+    .tagline {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 15px; font-weight: 600;
+      color: #4ADE80;
+      letter-spacing: 0.12em;
+    }
+
+    .stats {
+      display: flex; gap: 10px; margin-top: 4px;
+    }
+    .stat {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 14px; border-radius: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; font-weight: 600;
+    }
+    .stat-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .stat.w { background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.25); color: #4ADE80; }
+    .stat.w .stat-dot { background:#4ADE80; box-shadow: 0 0 6px #4ADE80; }
+    .stat.wt { background: rgba(245,166,35,0.08); border: 1px solid rgba(245,166,35,0.25); color: #F5A623; }
+    .stat.wt .stat-dot { background:#F5A623; box-shadow: 0 0 6px #F5A623; }
+    .stat.i { background: rgba(80,80,80,0.12); border: 1px solid rgba(80,80,80,0.2); color: #555; }
+    .stat.i .stat-dot { background:#555; }
+
+    /* divider */
+    .divider {
+      position: absolute;
+      left: 700px; top: 64px; bottom: 64px; width: 1px;
+      background: linear-gradient(to bottom,
+        transparent 0%,
+        rgba(217,119,87,0.35) 30%,
+        rgba(167,139,250,0.35) 70%,
+        transparent 100%);
+    }
+
+    /* ── RIGHT PANEL ── */
+    .right {
+      position: absolute;
+      right: 52px; top: 0; bottom: 0; width: 520px;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* device shell */
+    .device {
+      position: relative;
+      width: 436px; height: 292px;
+    }
+
+    /* outer shell / bezel */
+    .bezel {
+      position: absolute;
+      inset: -10px;
+      background: #1a1a1a;
+      border: 1.5px solid #2c2c2c;
+      border-radius: 16px;
+      box-shadow:
+        0 0 0 1px #0a0a0a,
+        inset 0 1px 0 rgba(255,255,255,0.04),
+        0 24px 64px rgba(0,0,0,0.85),
+        0 0 48px rgba(217,119,87,0.08),
+        0 0 100px rgba(167,139,250,0.06);
+    }
+
+    /* screen */
+    .screen {
+      position: absolute; inset: 0;
+      background: #141414;
+      border-radius: 8px;
+      overflow: hidden;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* scanlines */
+    .scanlines {
+      position: absolute; inset: 0; z-index: 10; pointer-events: none;
+      background: repeating-linear-gradient(
+        0deg, transparent, transparent 3px,
+        rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px
+      );
+    }
+
+    /* tab bar */
+    .tabs {
+      height: 32px; background: #1a1a1a;
+      display: flex; border-bottom: 1px solid #252525;
+    }
+    .tab {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      font-size: 9.5px; color: #444; letter-spacing: 0.06em;
+    }
+    .tab.on { color: #D97757; border-bottom: 2px solid #D97757; }
+
+    /* header */
+    .disp-header {
+      height: 24px; background: #1c1c1c;
+      display: flex; align-items: center;
+      padding: 0 12px; gap: 8px;
+      border-bottom: 1px solid #252525;
+    }
+    .hdr-sep { flex: 1; }
+    .hdr-cl { font-size: 9.5px; color: #D97757; font-weight: 700; }
+    .hdr-cd { font-size: 9.5px; color: #A78BFA; font-weight: 700; }
+    .hdr-div { font-size: 9.5px; color: #2a2a2a; }
+
+    /* cards */
+    .card {
+      height: 30px; display: flex; align-items: center;
+      padding: 0 12px; gap: 9px;
+      border-bottom: 1px solid #1c1c1c;
+    }
+    .cdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .cname { font-size: 9.5px; color: #bbb; flex: 1; }
+    .cbadge { font-size: 8px; padding: 2px 7px; border-radius: 3px; }
+    .bw { background: rgba(74,222,128,0.12); color: #4ADE80; }
+    .bwt { background: rgba(245,166,35,0.12); color: #F5A623; }
+    .bi { color: #383838; }
+
+    /* footer */
+    .disp-footer {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      height: 28px; background: #1a1a1a;
+      display: flex; align-items: center;
+      padding: 0 12px; justify-content: space-between;
+      border-top: 1px solid #252525;
+    }
+    .ftxt { font-size: 8.5px; color: #444; }
+    .fonline { font-size: 8.5px; color: #4ADE80; }
+  </style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="glow-orange"></div>
+  <div class="glow-purple"></div>
+  <div class="glow-green"></div>
+
+  <div class="corner corner-tl"></div>
+  <div class="corner corner-tr"></div>
+  <div class="corner corner-bl"></div>
+  <div class="corner corner-br"></div>
+
+  <!-- LEFT -->
+  <div class="left">
+    <div class="meta-row">
+      <div class="live-dot"></div>
+      <span class="version-badge">v0.1.0</span>
+      <span class="lang-badge">Rust</span>
+    </div>
+
+    <h1>CYDRUST</h1>
+
+    <div class="subtitle">Real-time AI Session Monitor</div>
+    <div class="tagline">ESP32 &bull; Rust &bull; Claude Code</div>
+
+    <div class="stats">
+      <div class="stat w"><div class="stat-dot"></div>3 Working</div>
+      <div class="stat wt"><div class="stat-dot"></div>1 Waiting</div>
+      <div class="stat i"><div class="stat-dot"></div>2 Idle</div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- RIGHT: display mockup -->
+  <div class="right">
+    <div class="device">
+      <div class="bezel"></div>
+      <div class="screen">
+        <div class="scanlines"></div>
+
+        <div class="tabs">
+          <div class="tab on">SESSIONS ▾</div>
+          <div class="tab">USAGE</div>
+          <div class="tab">SETTINGS</div>
+        </div>
+
+        <div class="disp-header">
+          <span class="hdr-cl">Claude 78%</span>
+          <span class="hdr-div">│</span>
+          <span class="hdr-sep"></span>
+          <span class="hdr-cd">Codex 22%</span>
+        </div>
+
+        <div class="card">
+          <div class="cdot" style="background:#4ADE80;box-shadow:0 0 5px #4ADE80"></div>
+          <span class="cname">cydrust</span>
+          <span class="cbadge bw">working</span>
+        </div>
+        <div class="card">
+          <div class="cdot" style="background:#F5A623;box-shadow:0 0 5px #F5A623"></div>
+          <span class="cname">my-web-app</span>
+          <span class="cbadge bwt">waiting</span>
+        </div>
+        <div class="card">
+          <div class="cdot" style="background:#4ADE80;box-shadow:0 0 5px #4ADE80"></div>
+          <span class="cname">api-server</span>
+          <span class="cbadge bw">working</span>
+        </div>
+        <div class="card">
+          <div class="cdot" style="background:#4ADE80;box-shadow:0 0 5px #4ADE80"></div>
+          <span class="cname">data-pipeline</span>
+          <span class="cbadge bw">working</span>
+        </div>
+        <div class="card">
+          <div class="cdot" style="background:#333"></div>
+          <span class="cname">blog-site</span>
+          <span class="cbadge bi">idle</span>
+        </div>
+        <div class="card">
+          <div class="cdot" style="background:#333"></div>
+          <span class="cname">old-backend</span>
+          <span class="cbadge bi">idle</span>
+        </div>
+
+        <div class="disp-footer">
+          <span class="ftxt">3 working &middot; 1 waiting</span>
+          <span class="fonline">● online</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
