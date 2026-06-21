@@ -50,8 +50,8 @@ fn now_secs() -> f64 {
 /// Resolution order:
 ///   1. $HERMES_DATA_DIR / $HERMES_HOME (first existing)
 ///   2. platform default:
-///        Windows: %LOCALAPPDATA%\hermes  (confirmed on this host; APPDATA fallback)
-///        else:    $XDG_DATA_HOME/hermes if set, else ~/.local/share/hermes
+///     Windows: %LOCALAPPDATA%\hermes  (confirmed on this host; APPDATA fallback)
+///     else:    $XDG_DATA_HOME/hermes if set, else ~/.local/share/hermes
 fn hermes_data_root() -> PathBuf {
     for var in ["HERMES_DATA_DIR", "HERMES_HOME"] {
         if let Ok(v) = env::var(var) {

@@ -40,8 +40,7 @@ fn claude_projects_root() -> PathBuf {
 /// Python `project_from_encoded_dir`.
 fn project_from_encoded_dir(name: &str) -> String {
     name.split('-')
-        .filter(|p| !p.is_empty())
-        .next_back()
+        .rfind(|p| !p.is_empty())
         .unwrap_or(name)
         .to_string()
 }

@@ -111,8 +111,9 @@ struct Rollout {
 ///      (task_complete -> waiting; task_started/turn_aborted -> not waiting);
 ///   2. a version fallback when no markers exist: last event_msg of
 ///      agent_message -> waiting; user_message -> not waiting.
+///
 /// active (a turn is in progress, the model owes a reply) is the complement:
-///   task_started with no later complete/abort, or the user spoke last.
+/// task_started with no later complete/abort, or the user spoke last.
 ///
 /// Never panics: malformed lines are skipped, and a missing/unreadable file
 /// yields a best-effort result keyed on the filename stem.

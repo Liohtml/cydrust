@@ -76,6 +76,10 @@ jobs:
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
+        env:
+          # firmware/rust-toolchain.toml specifies channel = "esp" which is not
+          # installed in the cargo-deny Docker image; stable overrides it.
+          RUSTUP_TOOLCHAIN: stable
         with:
           # Each workspace provides its own deny.toml (or falls back to root)
           manifest-path: ${{ matrix.workspace }}/Cargo.toml

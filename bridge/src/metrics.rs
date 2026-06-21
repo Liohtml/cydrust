@@ -230,7 +230,7 @@ impl Builder {
             })
             .collect();
         // sort by tokens DESC; ties keep stable order
-        models.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+        models.sort_by_key(|m| std::cmp::Reverse(m.tokens));
 
         let model = models.first().map(|m| m.model.clone());
 
