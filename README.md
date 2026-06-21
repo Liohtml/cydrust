@@ -7,8 +7,8 @@
   <p><strong>Cyberpunk Development Monitor — Real-time AI coding session tracker for Claude Code on ESP32</strong></p>
 
   <!-- Build & quality -->
-  [![CI Bridge](https://img.shields.io/github/actions/workflow/status/liomachire/cydrust/bridge.yml?branch=main&label=CI%20Bridge&logo=github&style=flat-square)](https://github.com/liomachire/cydrust/actions)
-  [![Firmware Build](https://img.shields.io/github/actions/workflow/status/liomachire/cydrust/firmware.yml?branch=main&label=Firmware%20Build&logo=espressif&logoColor=white&style=flat-square)](https://github.com/liomachire/cydrust/actions)
+  [![CI Bridge](https://img.shields.io/github/actions/workflow/status/Liohtml/cydrust/bridge.yml?branch=main&label=CI%20Bridge&logo=github&style=flat-square)](https://github.com/Liohtml/cydrust/actions)
+  [![Firmware Build](https://img.shields.io/github/actions/workflow/status/Liohtml/cydrust/firmware.yml?branch=main&label=Firmware%20Build&logo=espressif&logoColor=white&style=flat-square)](https://github.com/Liohtml/cydrust/actions)
   [![Rust](https://img.shields.io/badge/Rust-stable%20%2B%20esp-orange?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org/)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
@@ -156,7 +156,7 @@
 ### 1 — Clone
 
 ```bash
-git clone https://github.com/liomachire/cydrust.git
+git clone https://github.com/Liohtml/cydrust.git
 cd cydrust
 ```
 

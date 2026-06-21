@@ -76,7 +76,7 @@ If you are unsure whether your idea fits the project, open a Discussion before w
 ### Clone and Build
 
 ```sh
-git clone https://github.com/liomachire/cydrust.git
+git clone https://github.com/Liohtml/cydrust.git
 cd cydrust
 
 # Build the bridge

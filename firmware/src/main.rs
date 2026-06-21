@@ -1,8 +1,13 @@
 use anyhow::Result;
 use embedded_graphics::{
+    mono_font::{
+        ascii::{FONT_10X20, FONT_7X13, FONT_7X13_BOLD, FONT_9X15, FONT_9X15_BOLD},
+        MonoFont, MonoTextStyle,
+    },
     pixelcolor::Rgb565,
     prelude::*,
     primitives::{PrimitiveStyleBuilder, Rectangle, RoundedRectangle},
+    text::{Alignment, Text},
 };
 use display_interface_spi::SPIInterface;
 use esp_idf_hal::{
@@ -19,11 +24,6 @@ use mipidsi::{
     Builder,
 };
 use std::time::Instant;
-use u8g2_fonts::{
-    fonts,
-    types::{FontColor, HorizontalAlignment, VerticalPosition},
-    FontRenderer,
-};
 
 #[cfg(feature = "wifi")]
 use embedded_svc::{http::client::Client as HttpClient, http::Method, io::Read as EmbeddedRead};
@@ -34,8 +34,6 @@ use esp_idf_svc::{
     nvs::EspDefaultNvsPartition,
     wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
-#[cfg(feature = "wifi")]
-use std::time::Duration;
 #[cfg(not(feature = "wifi"))]
 use std::sync::{Arc, Mutex};
 
@@ -155,22 +153,20 @@ fn fetch_state(token: &str, host: &str, port: &str) -> Option<DisplayState> {
 }
 
 // ── Colour palette ────────────────────────────────────────────────────────────
-// Rgb565::new(r5, g6, b5) — raw channel values, NOT 0-255.
-// Note: display uses ColorInversion::Inverted (needed for this ST7789 panel).
-// These values produce the correct on-screen colours after hardware inversion.
-const C_BG:      Rgb565 = Rgb565::new(29, 58, 29);  // dark bg  (#141414 → inverted shows dark)
-const C_PANEL:   Rgb565 = Rgb565::new(26, 52, 26);  // card bg  (#2B2B2B)
-const C_FG:      Rgb565 = Rgb565::new(2,  4,  2);   // near-white text (#EDEDED)
-const C_DIM:     Rgb565 = Rgb565::new(14, 29, 14);  // dim text  (#8A8A8A)
-const C_CLAUDE:  Rgb565 = Rgb565::new(5,  34, 20);  // orange   (#D97757)
-const C_CODEX:   Rgb565 = Rgb565::new(11, 29, 1);   // purple   (#A78BFA)
-const C_WAIT:    Rgb565 = Rgb565::new(1,  22, 27);  // amber    (#F5A623)
-const C_WAITDK:  Rgb565 = Rgb565::new(22, 51, 31);  // dark amber bg (#4A3000)
-const C_WORK:    Rgb565 = Rgb565::new(22, 8,  15);  // green    (#4ADE80)
-const C_OFFLINE: Rgb565 = Rgb565::new(3,  45, 22);  // red      (#E5484D)
-const C_BLACK:   Rgb565 = Rgb565::new(31, 63, 31);  // rendered as black after inversion
+// ColorInversion::Inverted cancels the ST7789 panel's native inversion,
+// so stored Rgb565 values display directly as-is.
+const C_BG:      Rgb565 = Rgb565::new(2,  5,  2);   // near-black #141414
+const C_PANEL:   Rgb565 = Rgb565::new(5,  11, 5);   // dark card  #2B2B2B
+const C_FG:      Rgb565 = Rgb565::new(29, 59, 29);  // near-white #EDEDED
+const C_DIM:     Rgb565 = Rgb565::new(17, 34, 17);  // dim        #8A8A8A
+const C_CLAUDE:  Rgb565 = Rgb565::new(26, 29, 11);  // orange     #D97757
+const C_CODEX:   Rgb565 = Rgb565::new(20, 34, 30);  // purple     #A78BFA
+const C_WAIT:    Rgb565 = Rgb565::new(30, 41,  4);  // amber      #F5A623
+const C_WAITDK:  Rgb565 = Rgb565::new(9,  12,  0);  // dark amber #4A3000
+const C_WORK:    Rgb565 = Rgb565::new(9,  55, 16);  // green      #4ADE80
+const C_OFFLINE: Rgb565 = Rgb565::new(28, 18,  9);  // red        #E5484D
 
-// ── Draw helpers ─────────────────────────────────────────────────────────────
+// ── Draw primitives ────────────────────────────────────────────────────────────
 
 fn fill<D: DrawTarget<Color = Rgb565>>(d: &mut D, x: i32, y: i32, w: u32, h: u32, c: Rgb565) {
     let _ = Rectangle::new(Point::new(x, y), Size::new(w, h))
@@ -188,25 +184,16 @@ fn rfill<D: DrawTarget<Color = Rgb565>>(d: &mut D, x: i32, y: i32, w: u32, h: u3
 }
 
 fn txt<D: DrawTarget<Color = Rgb565>>(
-    d: &mut D, font: &FontRenderer, s: &str,
-    x: i32, y: i32, align: HorizontalAlignment, fg: Rgb565, bg: Rgb565,
+    d: &mut D, font: &MonoFont<'_>, s: &str,
+    x: i32, y: i32, align: Alignment, color: Rgb565,
 ) {
-    let _ = font.render_aligned(
-        s,
-        Point::new(x, y),
-        VerticalPosition::Baseline,
-        align,
-        FontColor::WithBackground { fg, bg },
-        d,
-    );
+    let style = MonoTextStyle::new(font, color);
+    let _ = Text::with_alignment(s, Point::new(x, y), style, align).draw(d);
 }
 
-// ── Tab bar helper ────────────────────────────────────────────────────────────
+// ── Tab bar ───────────────────────────────────────────────────────────────────
 
-fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(
-    d: &mut D, f: &FontRenderer, active: Tab,
-) {
-    // Three equally-wide tab buttons
+fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(d: &mut D, active: Tab) {
     let tabs: &[(&str, i32, u32, Tab)] = &[
         ("SESSIONS", 53,  107, Tab::Sessions),
         ("USAGE",    160, 106, Tab::Usage),
@@ -214,13 +201,9 @@ fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(
     ];
     let mut x = 1i32;
     for (label, cx, w, tab) in tabs {
-        let (bg, fg) = if *tab == active {
-            (C_CLAUDE, C_BLACK)
-        } else {
-            (C_PANEL, C_DIM)
-        };
+        let (bg, fg) = if *tab == active { (C_CLAUDE, C_BG) } else { (C_PANEL, C_DIM) };
         rfill(d, x, 1, *w, 24, 5, bg);
-        txt(d, f, label, *cx, 17, HorizontalAlignment::Center, fg, bg);
+        txt(d, &FONT_7X13_BOLD, label, *cx, 17, Alignment::Center, fg);
         x += *w as i32 + 1;
     }
 }
@@ -228,33 +211,25 @@ fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(
 // ── Render ────────────────────────────────────────────────────────────────────
 //
 // Layout 320×240 landscape:
-//   y=0-25   Tab bar (26 px)
-//   y=26-44  Usage header  (19 px)
-//   y=45     Separator     (1 px)
-//   y=46..   Session cards, 27 px stride  (max 6 → 162 px, ends y=207)
-//   y=214-239 Footer / offline banner     (26 px)
+//   y= 0-25   Tab bar        (26 px)
+//   y=26-44   Usage header   (19 px)
+//   y=45      Separator       (1 px)
+//   y=46..    Session cards  (27 px stride × 6 max)
+//   y=214-239 Footer/offline (26 px)
 
 fn render<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayState, active: Tab) {
-    let f14 = FontRenderer::new::<fonts::u8g2_font_helvR14_tf>();
-    let f12 = FontRenderer::new::<fonts::u8g2_font_helvR12_tf>();
-
     fill(display, 0, 0, 320, 240, C_BG);
-
-    // ── Tab bar ──────────────────────────────────────────────────────────────
-    draw_tab_bar(display, &f12, active);
+    draw_tab_bar(display, active);
 
     match active {
-        Tab::Sessions => render_sessions(display, ds, &f12, &f14),
-        Tab::Usage    => render_usage(display, ds, &f12, &f14),
-        Tab::Settings => render_settings(display, &f12),
+        Tab::Sessions => render_sessions(display, ds),
+        Tab::Usage    => render_usage(display, ds),
+        Tab::Settings => render_settings(display),
     }
 }
 
-fn render_sessions<D: DrawTarget<Color = Rgb565>>(
-    display: &mut D, ds: &DisplayState,
-    f12: &FontRenderer, f14: &FontRenderer,
-) {
-    // ── Usage header ─────────────────────────────────────────────────────────
+fn render_sessions<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayState) {
+    // Usage header
     let claude_h = match ds.claude_pct {
         Some(p) => format!("Claude {:.0}%", p),
         None    => "Claude --".to_string(),
@@ -263,111 +238,92 @@ fn render_sessions<D: DrawTarget<Color = Rgb565>>(
         Some(p) => format!("Codex {:.0}%", p),
         None    => "Codex --".to_string(),
     };
-    txt(display, f12, &claude_h, 4,   40, HorizontalAlignment::Left,  C_CLAUDE, C_BG);
-    txt(display, f12, &codex_h,  316, 40, HorizontalAlignment::Right, C_CODEX,  C_BG);
+    txt(display, &FONT_7X13, &claude_h, 4,   40, Alignment::Left,  C_CLAUDE);
+    txt(display, &FONT_7X13, &codex_h,  316, 40, Alignment::Right, C_CODEX);
     fill(display, 0, 45, 320, 1, C_PANEL);
 
-    // ── Session cards ─────────────────────────────────────────────────────────
-    if ds.offline {
-        // offline banner at bottom — cards area stays empty
-    } else if ds.sessions.is_empty() {
-        txt(display, f12, "no sessions", 160, 130, HorizontalAlignment::Center, C_DIM, C_BG);
-    } else {
-        for (i, row) in ds.sessions.iter().take(6).enumerate() {
-            let y = 47 + (i as i32) * 27;
-            let card_bg = if row.status == SessionStatus::Waiting { C_WAITDK } else { C_PANEL };
+    // Session cards
+    if !ds.offline {
+        if ds.sessions.is_empty() {
+            txt(display, &FONT_9X15, "no sessions", 160, 130, Alignment::Center, C_DIM);
+        } else {
+            for (i, row) in ds.sessions.iter().take(6).enumerate() {
+                let y = 47 + (i as i32) * 27;
+                let card_bg = if row.status == SessionStatus::Waiting { C_WAITDK } else { C_PANEL };
 
-            // Card background (rounded)
-            rfill(display, 2, y, 316, 25, 4, card_bg);
+                // Card (rounded, 4 px radius)
+                rfill(display, 2, y, 316, 25, 4, card_bg);
 
-            // Provider accent strip (4 px) — left edge of card
-            let accent = if row.tool.as_str() == "codex" { C_CODEX } else { C_CLAUDE };
-            fill(display, 2, y, 4, 25, accent);
+                // Provider accent strip (6 px wide, full card height)
+                let accent = if row.tool.as_str() == "codex" { C_CODEX } else { C_CLAUDE };
+                fill(display, 2, y, 6, 25, accent);
 
-            // Project name
-            txt(display, f12, row.project.as_str(), 12, y + 17,
-                HorizontalAlignment::Left, C_FG, card_bg);
+                // Project name
+                txt(display, &FONT_7X13_BOLD, row.project.as_str(),
+                    14, y + 17, Alignment::Left, C_FG);
 
-            // Status symbol + colour
-            let (sym, sc) = match row.status {
-                SessionStatus::Working => (">>", C_WORK),
-                SessionStatus::Waiting => ("!",  C_WAIT),
-                SessionStatus::Idle    => ("z",  C_DIM),
-            };
-            txt(display, f12, sym, 312, y + 17,
-                HorizontalAlignment::Right, sc, card_bg);
+                // Status symbol
+                let (sym, sc) = match row.status {
+                    SessionStatus::Working => (">>", C_WORK),
+                    SessionStatus::Waiting => ("!",  C_WAIT),
+                    SessionStatus::Idle    => ("z",  C_DIM),
+                };
+                txt(display, &FONT_9X15_BOLD, sym, 312, y + 17, Alignment::Right, sc);
+            }
         }
     }
 
-    // ── Footer / offline banner ───────────────────────────────────────────────
+    // Footer / offline banner
     if ds.offline {
         rfill(display, 2, 215, 316, 23, 5, C_OFFLINE);
-        txt(display, f14, "hub offline", 160, 231,
-            HorizontalAlignment::Center, C_FG, C_OFFLINE);
+        txt(display, &FONT_9X15_BOLD, "hub offline", 160, 231, Alignment::Center, C_FG);
     } else {
         let working = ds.sessions.iter().filter(|s| s.status == SessionStatus::Working).count();
         let waiting = ds.sessions.iter().filter(|s| s.status == SessionStatus::Waiting).count();
         let footer  = format!("{} working   {} waiting", working, waiting);
-        txt(display, f12, &footer, 4, 234,
-            HorizontalAlignment::Left, C_DIM, C_BG);
+        txt(display, &FONT_7X13, &footer, 4, 234, Alignment::Left, C_DIM);
     }
 }
 
-fn render_usage<D: DrawTarget<Color = Rgb565>>(
-    display: &mut D, ds: &DisplayState,
-    f12: &FontRenderer, f14: &FontRenderer,
-) {
-    // Claude usage bar
-    txt(display, f14, "CLAUDE", 8, 60, HorizontalAlignment::Left, C_CLAUDE, C_BG);
-    let bar_w: u32 = 300;
-    let bar_x = 8i32;
-    fill(display, bar_x, 66, bar_w, 18, C_PANEL);  // track
+fn render_usage<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayState) {
+    txt(display, &FONT_10X20, "CLAUDE", 8, 62, Alignment::Left, C_CLAUDE);
+    let bx = 8i32;
+    let bw: u32 = 280;
+    fill(display, bx, 68, bw, 20, C_PANEL);
     if let Some(pct) = ds.claude_pct {
-        let fill_w = ((pct.min(100.0) / 100.0) * bar_w as f32) as u32;
-        if fill_w > 0 { fill(display, bar_x, 66, fill_w, 18, C_CLAUDE); }
-        let label = format!("{:.0}%", pct);
-        txt(display, f12, &label, bar_x + bar_w as i32 + 4, 80,
-            HorizontalAlignment::Left, C_CLAUDE, C_BG);
+        let fw = ((pct.min(100.0) / 100.0) * bw as f32) as u32;
+        if fw > 0 { fill(display, bx, 68, fw, 20, C_CLAUDE); }
+        let s = format!("{:.0}%", pct);
+        txt(display, &FONT_7X13_BOLD, &s, bx + bw as i32 + 6, 83, Alignment::Left, C_CLAUDE);
     } else {
-        txt(display, f12, "--", bar_x + bar_w as i32 + 4, 80,
-            HorizontalAlignment::Left, C_DIM, C_BG);
+        txt(display, &FONT_7X13, "--", bx + bw as i32 + 6, 83, Alignment::Left, C_DIM);
     }
 
-    // Codex usage bar
-    txt(display, f14, "CODEX", 8, 120, HorizontalAlignment::Left, C_CODEX, C_BG);
-    fill(display, bar_x, 126, bar_w, 18, C_PANEL);  // track
+    txt(display, &FONT_10X20, "CODEX", 8, 126, Alignment::Left, C_CODEX);
+    fill(display, bx, 132, bw, 20, C_PANEL);
     if let Some(pct) = ds.codex_pct {
-        let fill_w = ((pct.min(100.0) / 100.0) * bar_w as f32) as u32;
-        if fill_w > 0 { fill(display, bar_x, 126, fill_w, 18, C_CODEX); }
-        let label = format!("{:.0}%", pct);
-        txt(display, f12, &label, bar_x + bar_w as i32 + 4, 140,
-            HorizontalAlignment::Left, C_CODEX, C_BG);
+        let fw = ((pct.min(100.0) / 100.0) * bw as f32) as u32;
+        if fw > 0 { fill(display, bx, 132, fw, 20, C_CODEX); }
+        let s = format!("{:.0}%", pct);
+        txt(display, &FONT_7X13_BOLD, &s, bx + bw as i32 + 6, 147, Alignment::Left, C_CODEX);
     } else {
-        txt(display, f12, "--", bar_x + bar_w as i32 + 4, 140,
-            HorizontalAlignment::Left, C_DIM, C_BG);
+        txt(display, &FONT_7X13, "--", bx + bw as i32 + 6, 147, Alignment::Left, C_DIM);
     }
 
-    // Offline notice if needed
     if ds.offline {
         rfill(display, 2, 215, 316, 23, 5, C_OFFLINE);
-        txt(display, f14, "hub offline", 160, 231,
-            HorizontalAlignment::Center, C_FG, C_OFFLINE);
+        txt(display, &FONT_9X15_BOLD, "hub offline", 160, 231, Alignment::Center, C_FG);
     }
 }
 
-fn render_settings<D: DrawTarget<Color = Rgb565>>(display: &mut D, f12: &FontRenderer) {
-    txt(display, f12, "Settings", 160, 120,
-        HorizontalAlignment::Center, C_DIM, C_BG);
-    txt(display, f12, "(coming soon)", 160, 140,
-        HorizontalAlignment::Center, C_DIM, C_BG);
+fn render_settings<D: DrawTarget<Color = Rgb565>>(display: &mut D) {
+    txt(display, &FONT_9X15_BOLD, "Settings", 160, 120, Alignment::Center, C_DIM);
+    txt(display, &FONT_7X13, "(coming soon)", 160, 140, Alignment::Center, C_DIM);
 }
 
 // ── XPT2046 touch (bit-bang) ──────────────────────────────────────────────────
 //
-// CYD pin assignments:
-//   T_CS  = GPIO33   T_CLK  = GPIO25
-//   T_DIN = GPIO32   T_DO   = GPIO39 (input-only)
-//   T_IRQ = GPIO36   (active-low when screen is pressed)
+// CYD pinout:  T_CS=GPIO33  T_CLK=GPIO25  T_DIN=GPIO32  T_DO=GPIO39  T_IRQ=GPIO36
 
 fn xpt_send_recv<CS, CLK, MOSI, MISO>(
     cs:   &mut PinDriver<'_, CS, Output>,
@@ -382,44 +338,32 @@ where
     MOSI: esp_idf_hal::gpio::OutputPin,
     MISO: esp_idf_hal::gpio::InputPin,
 {
-    // Spin-loop ~3 µs at 160 MHz (160 cycles/µs ÷ 2 per iteration ≈ 240 spins)
     let delay = || { for _ in 0..240u32 { core::hint::spin_loop(); } };
-
     cs.set_low().ok();
-    // Send 8-bit command
     for i in (0..8).rev() {
-        let bit = (cmd >> i) & 1 != 0;
-        mosi.set_level(if bit { Level::High } else { Level::Low }).ok();
-        delay();
-        clk.set_high().ok();
-        delay();
-        clk.set_low().ok();
+        mosi.set_level(if (cmd >> i) & 1 != 0 { Level::High } else { Level::Low }).ok();
+        delay(); clk.set_high().ok(); delay(); clk.set_low().ok();
     }
-    // Read 12-bit result (MSB first; XPT2046 sends 12 bits + 0-bit padding)
+    // One BUSY clock after the control byte, then 12 data bits MSB-first.
+    clk.set_high().ok(); delay(); clk.set_low().ok(); delay();
     let mut result: u16 = 0;
     for _ in 0..12 {
-        clk.set_high().ok();
-        delay();
-        let bit = miso.get_level() == Level::High;
-        result = (result << 1) | (bit as u16);
-        clk.set_low().ok();
-        delay();
+        clk.set_high().ok(); delay();
+        result = (result << 1) | (miso.get_level() == Level::High) as u16;
+        clk.set_low().ok(); delay();
     }
     cs.set_high().ok();
     result
 }
 
-// Raw XPT2046 → screen pixel.  Calibration constants for the CYD landscape 320×240.
-// Adjust X_MIN/X_MAX/Y_MIN/Y_MAX if the touch feels off.
+// Map raw XPT2046 readings to screen coords. Calibration + axis assignment
+// match the original VibeMonitor firmware (display.cpp::touch_pressed with
+// XPT2046_Touchscreen::setRotation(1)): cmd 0x91 -> X, cmd 0xD1 -> Y.
 fn raw_to_screen(raw_x: u16, raw_y: u16) -> (i32, i32) {
-    const X_MIN: u16 =  300;
-    const X_MAX: u16 = 3800;
-    const Y_MIN: u16 =  300;
-    const Y_MAX: u16 = 3800;
-    let sx = ((raw_x.saturating_sub(X_MIN) as u32 * 319)
-        / (X_MAX - X_MIN) as u32).min(319) as i32;
-    let sy = ((raw_y.saturating_sub(Y_MIN) as u32 * 239)
-        / (Y_MAX - Y_MIN) as u32).min(239) as i32;
+    const X_MIN: u16 = 200; const X_MAX: u16 = 3900;
+    const Y_MIN: u16 = 240; const Y_MAX: u16 = 3800;
+    let sx = ((raw_x.saturating_sub(X_MIN) as u32 * 320) / (X_MAX - X_MIN) as u32).min(319) as i32;
+    let sy = ((raw_y.saturating_sub(Y_MIN) as u32 * 240) / (Y_MAX - Y_MIN) as u32).min(239) as i32;
     (sx, sy)
 }
 
@@ -441,11 +385,9 @@ fn run() -> Result<()> {
     #[cfg(feature = "wifi")] let sysloop = EspSystemEventLoop::take()?;
     #[cfg(feature = "wifi")] let nvs     = EspDefaultNvsPartition::take()?;
 
-    // Display backlight
     let mut bl = PinDriver::output(peripherals.pins.gpio21)?;
     bl.set_high()?;
 
-    // Display SPI
     let spi = SpiDriver::new(
         peripherals.spi2,
         peripherals.pins.gpio14,
@@ -461,24 +403,22 @@ fn run() -> Result<()> {
     let di = SPIInterface::new(spi_device, dc);
     let mut display = Builder::new(ST7789, di)
         .display_size(240, 320)
-        .invert_colors(ColorInversion::Inverted)
-        .color_order(ColorOrder::Bgr)
+        .invert_colors(ColorInversion::Normal)   // reference: -DTFT_INVERSION_OFF=1
+        .color_order(ColorOrder::Bgr)             // reference: -DTFT_RGB_ORDER=TFT_BGR
         .orientation(Orientation::new().rotate(Rotation::Deg90))
         .init(&mut FreeRtos)
         .map_err(|_| anyhow::anyhow!("display init failed"))?;
-    display.clear(Rgb565::WHITE).map_err(|_| anyhow::anyhow!("clear failed"))?;
+    display.clear(Rgb565::BLACK).map_err(|_| anyhow::anyhow!("clear failed"))?;
 
     // Touch (XPT2046 bit-bang)
-    let mut t_cs  = PinDriver::output(peripherals.pins.gpio33)?;
-    let mut t_clk = PinDriver::output(peripherals.pins.gpio25)?;
-    let mut t_mosi= PinDriver::output(peripherals.pins.gpio32)?;
-    let t_miso    = PinDriver::input(peripherals.pins.gpio39)?;
-    let t_irq     = PinDriver::input(peripherals.pins.gpio36)?;
-    t_cs.set_high()?;
-    t_clk.set_low()?;
-    t_mosi.set_low()?;
+    let mut t_cs   = PinDriver::output(peripherals.pins.gpio33)?;
+    let mut t_clk  = PinDriver::output(peripherals.pins.gpio25)?;
+    let mut t_mosi = PinDriver::output(peripherals.pins.gpio32)?;
+    let t_miso     = PinDriver::input(peripherals.pins.gpio39)?;
+    let t_irq      = PinDriver::input(peripherals.pins.gpio36)?;
+    t_cs.set_high()?; t_clk.set_low()?; t_mosi.set_low()?;
 
-    // ── WiFi transport ───────────────────────────────────────────────────────
+    // ── WiFi transport ────────────────────────────────────────────────────────
     #[cfg(feature = "wifi")]
     {
         info!("WiFi mode");
@@ -491,7 +431,7 @@ fn run() -> Result<()> {
             ..Default::default()
         }))?;
         wifi.start()?; wifi.connect()?; wifi.wait_netif_up()?;
-        let mut ds          = DisplayState::default();
+        let mut ds = DisplayState::default();
         let mut last_poll   = Instant::now().checked_sub(std::time::Duration::from_secs(100))
                                 .unwrap_or_else(Instant::now);
         let mut fail        = 0u8;
@@ -501,9 +441,10 @@ fn run() -> Result<()> {
         loop {
             let now_touched = t_irq.get_level() == Level::Low;
             if now_touched && !was_touched {
-                let rx = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0xD1);
-                let ry = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0x91);
-                let (sx, sy) = raw_to_screen(rx, ry);
+                let raw_x = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0x91);
+                let raw_y = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0xD1);
+                let (sx, sy) = raw_to_screen(raw_x, raw_y);
+                info!("touch raw=({},{}) screen=({},{})", raw_x, raw_y, sx, sy);
                 if sy < 26 {
                     active_tab = if sx < 107 { Tab::Sessions }
                                  else if sx < 214 { Tab::Usage }
@@ -527,7 +468,7 @@ fn run() -> Result<()> {
         }
     }
 
-    // ── USB transport ────────────────────────────────────────────────────────
+    // ── USB transport ─────────────────────────────────────────────────────────
     #[cfg(not(feature = "wifi"))]
     {
         info!("USB mode");
@@ -571,12 +512,12 @@ fn run() -> Result<()> {
         let mut prev: Option<(DisplayState, Tab)> = None;
 
         loop {
-            // Touch → tab switch
             let now_touched = t_irq.get_level() == Level::Low;
             if now_touched && !was_touched {
-                let rx = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0xD1);
-                let ry = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0x91);
-                let (sx, sy) = raw_to_screen(rx, ry);
+                let raw_x = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0x91);
+                let raw_y = xpt_send_recv(&mut t_cs, &mut t_clk, &mut t_mosi, &t_miso, 0xD1);
+                let (sx, sy) = raw_to_screen(raw_x, raw_y);
+                info!("touch raw=({},{}) screen=({},{})", raw_x, raw_y, sx, sy);
                 if sy < 26 {
                     active_tab = if sx < 107 { Tab::Sessions }
                                  else if sx < 214 { Tab::Usage }
@@ -585,7 +526,6 @@ fn run() -> Result<()> {
             }
             was_touched = now_touched;
 
-            // Data update
             let (ds, last_rx) = { let g = shared.lock().unwrap(); (g.0.clone(), g.1) };
             let mut state = ds;
             state.offline = last_rx.elapsed().as_secs() > 6;

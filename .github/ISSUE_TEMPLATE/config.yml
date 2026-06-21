@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Ask a Question (Discussions)
-    url: https://github.com/liomachire/cydrust/discussions
+    url: https://github.com/Liohtml/cydrust/discussions
     about: General questions, ideas, and community discussion
   - name: Documentation
-    url: https://github.com/liomachire/cydrust/tree/main/docs
+    url: https://github.com/Liohtml/cydrust/tree/main/docs
     about: Hardware wiring, API reference, development guide

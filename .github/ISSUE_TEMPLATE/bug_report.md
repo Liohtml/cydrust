@@ -3,7 +3,7 @@ name: Bug Report
 about: Something is not working as expected
 title: "[Bug] "
 labels: bug
-assignees: liomachire
+assignees: Liohtml
 ---
 
 ## Describe the Bug

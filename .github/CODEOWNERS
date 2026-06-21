@@ -1,11 +1,11 @@
 # CODEOWNERS - Automatic review assignment
-* @liomachire
+* @Liohtml
 
 # Bridge component
-/bridge/ @liomachire
+/bridge/ @Liohtml
 
 # Firmware
-/firmware/ @liomachire
+/firmware/ @Liohtml
 
 # CI/CD - always requires owner review
-/.github/workflows/ @liomachire
+/.github/workflows/ @Liohtml
