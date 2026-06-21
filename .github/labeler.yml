@@ -1,0 +1,16 @@
+bridge:
+  - bridge/**
+
+firmware:
+  - firmware/**
+
+ci:
+  - .github/**
+
+docs:
+  - docs/**
+  - "*.md"
+
+breaking-change:
+  - bridge/src/model.rs
+  - bridge/src/hub.rs

@@ -1,0 +1,76 @@
+version: 2
+
+updates:
+  # ── bridge/ Cargo dependencies ────────────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: /bridge
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    groups:
+      axum-ecosystem:
+        patterns:
+          - "axum"
+          - "tower*"
+          - "hyper*"
+          - "http*"
+      tokio-ecosystem:
+        patterns:
+          - "tokio*"
+      serde-ecosystem:
+        patterns:
+          - "serde*"
+      tracing-ecosystem:
+        patterns:
+          - "tracing*"
+    labels:
+      - "dependencies"
+      - "bridge"
+
+  # ── firmware/ Cargo dependencies ──────────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: /firmware
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      esp-idf-ecosystem:
+        patterns:
+          - "esp-idf*"
+          - "esp-*"
+          - "embuild"
+          - "embedded*"
+      display-ecosystem:
+        patterns:
+          - "mipidsi"
+          - "display-interface*"
+          - "u8g2*"
+          - "embedded-graphics"
+    labels:
+      - "dependencies"
+      - "firmware"
+    # Firmware deps are trickier to update; require manual review
+    versioning-strategy: increase-if-necessary
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      actions-ecosystem:
+        patterns:
+          - "*"
+    labels:
+      - "dependencies"
+      - "github-actions"

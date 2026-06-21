@@ -1,0 +1,43 @@
+[workspace]
+
+[package]
+name = "vibe-firmware"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+
+[features]
+default = []    # USB transport (no WiFi) — corporate default
+wifi = []       # enable WiFi transport: cargo build --features wifi
+
+[[bin]]
+name = "vibe-firmware"
+path = "src/main.rs"
+harness = false
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+opt-level = 1
+debug = true
+overflow-checks = false
+
+[dependencies]
+esp-idf-svc = { version = "0.50", features = ["std", "embassy-time-driver"] }
+esp-idf-hal = "0.45"
+esp-idf-sys = { version = "0.36", features = ["binstart"] }
+embedded-graphics = "0.8"
+u8g2-fonts = { version = "0.3", features = ["embedded_graphics_textstyle"] }
+embedded-svc = "0.28"
+mipidsi = "0.8"
+display-interface-spi = "0.5"
+embedded-hal = "1"
+serde = { version = "1", features = ["derive"] }
+serde-json-core = "0.5"
+heapless = "0.8"
+log = "0.4"
+anyhow = { version = "1", features = ["std"] }
+
+[build-dependencies]
+embuild = { version = "0.32", features = ["espidf"] }

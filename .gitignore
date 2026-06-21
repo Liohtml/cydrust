@@ -1,0 +1,76 @@
+# =============================================================================
+# CYDRUST — Rust IoT monitoring system
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rust / Cargo
+# -----------------------------------------------------------------------------
+/target/
+# Keep Cargo.lock for the bridge/ binary crate (intentional)
+# Cargo.lock for library crates would go here, but bridge is a binary
+# firmware/ manages its own Cargo.lock via ESP-IDF conventions
+.cargo/credentials
+.cargo/credentials.toml
+
+# -----------------------------------------------------------------------------
+# ESP-IDF / Embedded (firmware/)
+# -----------------------------------------------------------------------------
+managed-components/
+# sdkconfig.defaults is a project INPUT — commit it for reproducible builds
+!sdkconfig.defaults
+sdkconfig
+*.bin
+*.elf
+*.map
+build/
+dependencies.lock
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+
+# -----------------------------------------------------------------------------
+# IDE / Editor
+# -----------------------------------------------------------------------------
+# VS Code — keep extensions.json (shared dev recommendations), ignore the rest
+.vscode/*
+!.vscode/extensions.json
+!.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# OS artifacts
+# -----------------------------------------------------------------------------
+Thumbs.db
+.DS_Store
+desktop.ini
+ehthumbs.db
+
+# -----------------------------------------------------------------------------
+# Project-specific secrets & config
+# -----------------------------------------------------------------------------
+# bridge/config.toml holds runtime secrets (token, host, port) — NEVER commit it
+bridge/config.toml
+# Keep the example file
+!bridge/config.example.toml
+!config.example.toml
+# firmware/.cargo/config.toml is the toolchain target spec — always commit it
+!firmware/.cargo/config.toml
+
+# Local overrides
+*.local.toml
+*.local.env
+
+# Environment files
+.env
+.env.*
+# Keep the example
+!.env.example
+
+# -----------------------------------------------------------------------------
+# Logs
+# -----------------------------------------------------------------------------
+logs/
+*.log

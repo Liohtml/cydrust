@@ -1,0 +1,25 @@
+[workspace]
+# NOTE: firmware/ is intentionally excluded from workspace members.
+# It targets xtensa-esp32-espidf (a custom Xtensa toolchain via espup/esp-idf-sys)
+# which is incompatible with the standard Rust toolchain used by bridge/.
+# Build firmware/ independently with `cargo +esp build` inside firmware/.
+members = ["bridge"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Lionel Machire <lionel.machire@googlemail.com>"]
+license = "MIT"
+repository = "https://github.com/liomachire/cydrust"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Observability
+tracing = "0.1"

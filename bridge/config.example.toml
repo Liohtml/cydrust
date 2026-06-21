@@ -1,0 +1,12 @@
+# Copy this file to config.toml and fill in your values.
+# config.toml is git-ignored (contains secrets). This file is tracked.
+
+# Bearer token the ESP32 firmware must send in Authorization header.
+# Generate with: openssl rand -hex 32
+token = "CHANGE_ME_GENERATE_A_RANDOM_TOKEN"
+
+# Address to bind the Axum HTTP server on.
+host = "127.0.0.1"
+
+# Port to listen on. Must match VIBE_PORT in firmware .env.
+port = 5151

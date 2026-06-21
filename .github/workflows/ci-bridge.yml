@@ -1,0 +1,159 @@
+name: CI — Bridge
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "bridge/**"
+      - ".github/workflows/ci-bridge.yml"
+  pull_request:
+    paths:
+      - "bridge/**"
+      - ".github/workflows/ci-bridge.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: bridge
+
+jobs:
+  # ── Tests ─────────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            bridge/target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('bridge/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests (all features)
+        run: cargo test --all-features
+
+  # ── Clippy ────────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            bridge/target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('bridge/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-
+            ${{ runner.os }}-cargo-
+
+      - name: Run Clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ── Format ────────────────────────────────────────────────────────────────
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+  # ── Release build ─────────────────────────────────────────────────────────
+  build-release:
+    name: Build release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [test, clippy]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary_name: vibe-bridge
+            artifact_name: vibe-bridge-linux
+          - os: windows-latest
+            binary_name: vibe-bridge.exe
+            artifact_name: vibe-bridge-windows
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            bridge/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('bridge/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binaries
+        run: cargo build --release
+
+      - name: Upload vibe-bridge binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: bridge/target/release/${{ matrix.binary_name }}
+          retention-days: 7
+
+      - name: Upload serial_bridge binary (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-bridge-linux
+          path: bridge/target/release/serial_bridge
+          retention-days: 7
+
+      - name: Upload serial_bridge binary (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-bridge-windows
+          path: bridge/target/release/serial_bridge.exe
+          retention-days: 7

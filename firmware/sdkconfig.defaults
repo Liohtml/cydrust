@@ -1,0 +1,2 @@
+# Increase main task stack — default 3584 bytes is too small for our render loop
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
