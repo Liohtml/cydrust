@@ -93,6 +93,7 @@ mod tests {
             last_activity,
             waiting:       false,
             waiting_since: None,
+            active_turn:   false,
         }
     }
 
@@ -162,6 +163,7 @@ mod tests {
             last_activity: 2.0,
             waiting:       false,
             waiting_since: None,
+            active_turn:   false,
         };
         store.upsert(updated);
         let snap = store.snapshot();

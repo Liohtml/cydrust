@@ -44,6 +44,8 @@ jobs:
 
       - name: Run cargo-audit on ${{ matrix.workspace }}
         working-directory: ${{ matrix.workspace }}
+        env:
+          RUSTUP_TOOLCHAIN: stable
         run: cargo audit --deny warnings
 
   # ── cargo-deny (licenses + advisories + duplicates) ───────────────────────
@@ -66,9 +68,3 @@ jobs:
         with:
           # Each workspace provides its own deny.toml (or falls back to root)
           manifest-path: ${{ matrix.workspace }}/Cargo.toml
-          command: check
-          arguments: >-
-            advisories
-            licenses
-            bans
-            sources

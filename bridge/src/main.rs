@@ -1,7 +1,7 @@
 // Self-contained Rust hub: scans Claude/Codex/OpenCode/Hermes sessions, polls
 // usage, computes per-model metrics + titles, and serves /state — the all-Rust
 // replacement for the Python vibemonitor hub.
-use vibe_bridge::{collector, collector_hermes, collector_opencode, hub, metrics, state, usage};
+use vibe_bridge::{collector, collector_hermes, collector_opencode, federation, hub, metrics, state, usage};
 
 use anyhow::Result;
 use std::{
@@ -23,6 +23,17 @@ struct PriceEntry {
     output: f64,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+struct FederationConfig {
+    #[serde(default = "default_role")]
+    role: String,                 // "standalone" | "node" | "aggregator"
+    #[serde(default)]
+    upstream: Option<String>,     // node: aggregator base URL, e.g. http://aggregator:5151
+    #[serde(default)]
+    node_id: Option<String>,      // defaults to hostname
+}
+fn default_role() -> String { "standalone".into() }
+
 #[derive(Debug, serde::Deserialize)]
 struct Config {
     token: String,
@@ -32,6 +43,8 @@ struct Config {
     port: u16,
     #[serde(default)]
     pricing: HashMap<String, PriceEntry>,
+    #[serde(default)]
+    federation: FederationConfig,
 }
 
 fn default_host() -> String { "0.0.0.0".into() }
@@ -61,6 +74,7 @@ async fn main() -> Result<()> {
 
     let store = Arc::new(state::Store::new());
     let shared = Arc::new(RwLock::new(state::Shared::default()));
+    let remote = Arc::new(federation::RemoteStore::new());  // sessions from other machines
 
     // ── session scan + reaper loop (2s) ─────────────────────────────────────
     {
@@ -111,7 +125,30 @@ async fn main() -> Result<()> {
         });
     }
 
-    let app = hub::create_router(store, shared, cfg.token.clone());
+    // ── federation node push loop (2s): send local rows to the aggregator ───
+    if cfg.federation.role == "node" {
+        if let Some(upstream) = cfg.federation.upstream.clone() {
+            let node_id = cfg.federation.node_id.clone().unwrap_or_else(federation::hostname);
+            let store = store.clone();
+            let shared = shared.clone();
+            let token = cfg.token.clone();
+            thread::spawn(move || loop {
+                let rows = {
+                    let sh = shared.read().unwrap();
+                    hub::derive_rows_pub(&store, &sh, now_secs())
+                };
+                let payload = federation::from_session_rows(&rows, &node_id);
+                if let Err(e) = federation::push(&payload, &upstream, &token) {
+                    tracing::warn!("federation push failed: {e}");
+                }
+                thread::sleep(Duration::from_secs(2));
+            });
+        } else {
+            tracing::warn!("federation role=node but no upstream set; not pushing");
+        }
+    }
+
+    let app = hub::create_router(store, shared, cfg.token, remote);
     let addr: SocketAddr = format!("{}:{}", cfg.host, cfg.port).parse()?;
     let listener = TcpListener::bind(addr).await?;
     info!("vibe-bridge (all-Rust hub) listening on http://{addr}");

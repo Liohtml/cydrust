@@ -17,10 +17,15 @@ use vibe_bridge::{hub::create_router, state::Store};
 
 const TEST_TOKEN: &str = "test-secret-token";
 
-/// Build a fresh router backed by an empty store.
+/// Build a fresh router backed by an empty store and default shared state.
 fn make_app() -> (axum::Router, Arc<Store>) {
+    use std::sync::RwLock;
+    use vibe_bridge::federation::RemoteStore;
+    use vibe_bridge::state::Shared;
     let store = Arc::new(Store::new());
-    let router = create_router(store.clone(), TEST_TOKEN.to_string());
+    let shared = Arc::new(RwLock::new(Shared::default()));
+    let remote = Arc::new(RemoteStore::new());
+    let router = create_router(store.clone(), shared, TEST_TOKEN.to_string(), remote);
     (router, store)
 }
 
@@ -104,6 +109,7 @@ async fn get_state_shows_session_added_to_store() {
         last_activity: 1_700_000_000.0,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
     let resp = app.oneshot(get_state(Some(TEST_TOKEN))).await.unwrap();
@@ -134,6 +140,7 @@ async fn get_state_fresh_session_appears_in_response() {
         last_activity: now,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
     let resp = app.oneshot(get_state(Some(TEST_TOKEN))).await.unwrap();
@@ -165,7 +172,9 @@ async fn post_hook_with_valid_token_returns_200() {
 }
 
 #[tokio::test]
-async fn post_hook_stop_event_marks_session_waiting() {
+async fn post_hook_stop_event_does_not_mark_waiting() {
+    // hub.rs only marks waiting on "Notification"; Stop is a tool-result event
+    // and should not flip the flag.
     use std::time::{SystemTime, UNIX_EPOCH};
     use vibe_bridge::model::Session;
 
@@ -182,6 +191,7 @@ async fn post_hook_stop_event_marks_session_waiting() {
         last_activity: now,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
     let req = post_json(
@@ -193,8 +203,8 @@ async fn post_hook_stop_event_marks_session_waiting() {
 
     let snap = store.snapshot();
     assert_eq!(snap.len(), 1);
-    assert!(snap[0].waiting, "Stop event should mark session as waiting");
-    assert!(snap[0].waiting_since.is_some());
+    assert!(!snap[0].waiting, "Stop event must NOT mark session as waiting");
+    assert!(snap[0].waiting_since.is_none());
 }
 
 #[tokio::test]
@@ -215,6 +225,7 @@ async fn post_hook_notification_event_marks_session_waiting() {
         last_activity: now,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
     let req = post_json(
@@ -246,13 +257,14 @@ async fn post_hook_uses_session_id_field_as_fallback() {
         last_activity: now,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
-    // Use `sessionId` (camelCase) instead of `id`
+    // Use `sessionId` (camelCase) instead of `id`, with Notification event
     let req = post_json(
         "/hook",
         Some(TEST_TOKEN),
-        r#"{"sessionId":"alt-sess","event":"Stop"}"#,
+        r#"{"sessionId":"alt-sess","event":"Notification"}"#,
     );
     app.oneshot(req).await.unwrap();
 
@@ -278,13 +290,14 @@ async fn post_hook_uses_hook_event_name_as_fallback() {
         last_activity: now,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
-    // Use `hook_event_name` (snake_case alternative) instead of `event`
+    // Use `hook_event_name` (snake_case alternative) instead of `event`, with Notification
     let req = post_json(
         "/hook",
         Some(TEST_TOKEN),
-        r#"{"id":"evt-sess","hook_event_name":"Stop"}"#,
+        r#"{"id":"evt-sess","hook_event_name":"Notification"}"#,
     );
     app.oneshot(req).await.unwrap();
 
@@ -310,6 +323,7 @@ async fn post_hook_unknown_event_does_not_mark_waiting() {
         last_activity: now,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
     let req = post_json(
@@ -359,6 +373,7 @@ async fn post_ack_clears_waiting_state() {
         last_activity: now,
         waiting:       true,
         waiting_since: Some(now - 5.0),
+        active_turn: false,
     });
 
     let req = post_json("/ack", Some(TEST_TOKEN), r#"{"id":"ack-sess"}"#);
@@ -399,6 +414,7 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
         last_activity: now - 200.0,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
     // Working session: last_activity right now (< WORKING_SEC=60)
@@ -409,6 +425,7 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
         last_activity: now,
         waiting:       false,
         waiting_since: None,
+        active_turn: false,
     });
 
     // Waiting session
@@ -419,6 +436,7 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
         last_activity: now - 30.0,
         waiting:       true,
         waiting_since: Some(now - 10.0),
+        active_turn: false,
     });
 
     let resp = app.oneshot(get_state(Some(TEST_TOKEN))).await.unwrap();

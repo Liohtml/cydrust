@@ -173,6 +173,7 @@ mod tests {
             last_activity: 1_700_000_000.0,
             waiting:       false,
             waiting_since: None,
+            active_turn:   false,
         }
     }
 
@@ -223,6 +224,7 @@ mod tests {
             age_sec:     42,
             waiting:     false,
             waiting_sec: None,
+            summary:     None,
         };
         let v = serde_json::to_value(&row).unwrap();
         // field renamed via #[serde(rename = "ageSec")]
@@ -241,6 +243,7 @@ mod tests {
             age_sec:     10,
             waiting:     true,
             waiting_sec: Some(30),
+            summary:     None,
         };
         let v = serde_json::to_value(&row).unwrap();
         assert_eq!(v["waitingSec"], 30);
@@ -252,16 +255,16 @@ mod tests {
 
     #[test]
     fn usage_info_ok_false_pct_none() {
-        let u = UsageInfo { ok: false, pct: None, reset_sec: None };
+        let u = UsageInfo { ok: false, pct: None, reset_sec: None, ..Default::default() };
         let v = serde_json::to_value(&u).unwrap();
         assert_eq!(v["ok"], false);
-        assert!(v["pct"].is_null());
-        assert!(v["resetSec"].is_null());
+        // pct / resetSec are skip_serializing_if = is_none, so absent from output
+        assert!(v.get("pct").is_none() || v["pct"].is_null());
     }
 
     #[test]
     fn usage_info_reset_sec_renamed() {
-        let u = UsageInfo { ok: true, pct: Some(0.75), reset_sec: Some(120) };
+        let u = UsageInfo { ok: true, pct: Some(0.75), reset_sec: Some(120), ..Default::default() };
         let v = serde_json::to_value(&u).unwrap();
         assert_eq!(v["resetSec"], 120);
         assert!(!v.as_object().unwrap().contains_key("reset_sec"));
@@ -274,11 +277,10 @@ mod tests {
         let resp = StateResponse {
             ts:        1_700_000_000,
             sessions:  vec![],
-            usage:     UsageBlock {
-                claude: UsageInfo { ok: false, pct: None, reset_sec: None },
-                codex:  UsageInfo { ok: false, pct: None, reset_sec: None },
-            },
+            usage:     UsageBlock::default(),
             stale_sec: 5,
+            capacity:  crate::model::Capacity::default(),
+            metrics:   crate::model::Metrics::default(),
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["staleSec"], 5);

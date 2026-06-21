@@ -11,6 +11,14 @@ path = "src/lib.rs"
 name = "vibe-bridge"
 path = "src/main.rs"
 
+[[bin]]
+name = "install_hooks"
+path = "src/bin/install_hooks.rs"
+
+[[bin]]
+name = "vibe_hook"
+path = "src/bin/vibe_hook.rs"
+
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }

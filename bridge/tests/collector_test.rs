@@ -79,6 +79,7 @@ fn manual_scan_populates_store_correctly() {
             last_activity: now,
             waiting:       false,
             waiting_since: None,
+            active_turn: false,
         },
         Session {
             id:            "session-beta".into(),
@@ -87,6 +88,7 @@ fn manual_scan_populates_store_correctly() {
             last_activity: now - 30.0,
             waiting:       false,
             waiting_since: None,
+            active_turn: false,
         },
     ];
 

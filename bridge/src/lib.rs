@@ -1,6 +1,7 @@
 // Library entry-point – exposes internal modules for integration tests.
 // The binary (main.rs) uses these same modules directly via `mod` declarations.
 pub mod collector;
+pub mod federation;
 pub mod collector_opencode;
 pub mod collector_hermes;
 pub mod hub;
