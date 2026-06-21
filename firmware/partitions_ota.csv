@@ -1,0 +1,29 @@
+# CYDRUST OTA partition table (4 MB flash, dual app slots).
+#
+# Used ONLY by the OTA build:  cargo +esp build --features wifi,ota
+# Enable via sdkconfig.defaults.ota (see notes in sdkconfig.defaults), i.e.:
+#   CONFIG_PARTITION_TABLE_CUSTOM=y
+#   CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+#
+# The default (USB / corporate) build keeps the built-in single-`factory`
+# layout and does NOT use this file.
+#
+# Layout (bootloader @ 0x1000, this table @ 0x8000 — fixed by ESP-IDF):
+#   nvs      24 KiB   WiFi calibration + our "vibe_set" settings namespace
+#   otadata   8 KiB   which slot to boot (mirrored, 2x 4 KiB)
+#   phy_init  4 KiB   RF/PHY calibration (kept to mirror the default layout)
+#   ota_0  1664 KiB   app slot A  (~800 KiB image fits with headroom)
+#   ota_1  1664 KiB   app slot B
+#  --------------------------------------------------------------
+#  total used: 0x10000 + 2*0x1A0000 = 0x350000 (3.3 MiB) of the 4 MiB part.
+#
+# App partitions must be 0x10000-aligned; offsets below are auto-computed by
+# leaving the Offset column blank where possible, but are written explicitly
+# for clarity. Sizes can be grown later as long as the table stays <= 4 MiB.
+#
+# Name,     Type,  SubType,  Offset,    Size,      Flags
+nvs,        data,  nvs,      0x9000,    0x6000,
+otadata,    data,  ota,      0xf000,    0x2000,
+phy_init,   data,  phy,      0x11000,   0x1000,
+ota_0,      app,   ota_0,    0x20000,   0x1A0000,
+ota_1,      app,   ota_1,    0x1C0000,  0x1A0000,

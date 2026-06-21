@@ -36,10 +36,16 @@ use esp_idf_svc::{
     http::client::{Configuration as HttpConfig, EspHttpConnection},
     wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
-#[cfg(not(feature = "wifi"))]
+// Shared-state handle is used by both the USB stdin reader and the BLE
+// transport (mutually exclusive with wifi).
+#[cfg(any(all(not(feature = "wifi"), not(feature = "ble")), all(feature = "ble", not(feature = "wifi"))))]
 use std::sync::{Arc, Mutex};
 
 mod icons;
+#[cfg(all(feature = "wifi", feature = "ota"))]
+mod ota;
+#[cfg(all(feature = "ble", not(feature = "wifi")))]
+mod ble;
 
 // ── Data model ───────────────────────────────────────────────────────────────
 
@@ -316,6 +322,10 @@ fn trunc_bytes(s: &str, max_bytes: usize) -> &str {
 #[cfg(feature = "wifi")] const BRIDGE_PORT:  &str = env!("VIBE_PORT");
 #[cfg(feature = "wifi")] const BRIDGE_TOKEN: &str = env!("VIBE_TOKEN");
 #[cfg(feature = "wifi")] const POLL_MS: u64 = 2000;
+// OTA firmware URL, read at COMPILE time. Optional: when unset (or empty) the
+// boot-time OTA check is skipped. Only consulted in the wifi+ota build.
+#[cfg(all(feature = "wifi", feature = "ota"))]
+const OTA_URL: Option<&str> = option_env!("VIBE_OTA_URL");
 
 #[cfg(feature = "wifi")]
 fn fetch_state(token: &str, host: &str, port: &str) -> Option<DisplayState> {
@@ -1060,6 +1070,30 @@ fn run() -> Result<()> {
             ..Default::default()
         }))?;
         wifi.start()?; wifi.connect()?; wifi.wait_netif_up()?;
+
+        // ── Boot-time OTA check (wifi+ota build only) ──────────────────────────
+        // Confirm the running slot is healthy (cancels any pending rollback),
+        // then, if VIBE_OTA_URL was provided at compile time, fetch & apply an
+        // update. On success we reboot into the new image. Failures are logged
+        // and we carry on running the current firmware (never bricks).
+        #[cfg(feature = "ota")]
+        {
+            let _ = ota::mark_valid();
+            if let Some(url) = OTA_URL {
+                if !url.is_empty() {
+                    info!("OTA: boot check against {url}");
+                    match ota::check_and_update(url) {
+                        Ok(true)  => {
+                            info!("OTA: update applied — rebooting");
+                            esp_idf_svc::hal::reset::restart();
+                        }
+                        Ok(false) => info!("OTA: firmware already current"),
+                        Err(e)    => log::error!("OTA: update failed (continuing): {e:?}"),
+                    }
+                }
+            }
+        }
+
         let mut ds = DisplayState::default();
         let mut last_poll   = Instant::now().checked_sub(std::time::Duration::from_secs(100))
                                 .unwrap_or_else(Instant::now);
@@ -1142,44 +1176,62 @@ fn run() -> Result<()> {
         }
     }
 
-    // ── USB transport ─────────────────────────────────────────────────────────
+    // ── USB / BLE transport ─────────────────────────────────────────────────────
+    // Both non-wifi transports populate the SAME shared `(DisplayState, Instant)`
+    // that the render loop below reads, so the render loop + touch handling are
+    // shared verbatim. Exactly one transport's startup compiles:
+    //   • USB (default):        cfg(not(ble)) — stdin reader thread
+    //   • BLE (feature = ble):  cfg(ble)      — NimBLE GATT write callback
     #[cfg(not(feature = "wifi"))]
     {
-        info!("USB mode");
         let shared  = Arc::new(Mutex::new((DisplayState::default(), Instant::now())));
-        let shared2 = shared.clone();
 
-        std::thread::Builder::new()
-            .stack_size(16384)
-            .spawn(move || {
-                use std::io::Read;
-                let stdin   = std::io::stdin();
-                let mut buf = [0u8; 2048];
-                let mut len = 0usize;
-                let mut tmp = [0u8; 128];
-                loop {
-                    let n = stdin.lock().read(&mut tmp).unwrap_or(0);
-                    if n == 0 { FreeRtos::delay_ms(5); continue; }
-                    let copy = n.min(buf.len() - len);
-                    buf[len..len + copy].copy_from_slice(&tmp[..copy]);
-                    len += copy;
-                    while let Some(nl) = buf[..len].iter().position(|&b| b == b'\n') {
-                        if let Ok(s) = std::str::from_utf8(&buf[..nl]) {
-                            let t = s.trim();
-                            if t.starts_with('{') {
-                                if let Some(ds) = parse_state(t) {
-                                    let mut g = shared2.lock().unwrap();
-                                    g.0 = ds; g.1 = Instant::now();
+        // ── USB stdin reader (default transport) ───────────────────────────────
+        #[cfg(not(feature = "ble"))]
+        {
+            info!("USB mode");
+            let shared2 = shared.clone();
+            std::thread::Builder::new()
+                .stack_size(16384)
+                .spawn(move || {
+                    use std::io::Read;
+                    let stdin   = std::io::stdin();
+                    let mut buf = [0u8; 2048];
+                    let mut len = 0usize;
+                    let mut tmp = [0u8; 128];
+                    loop {
+                        let n = stdin.lock().read(&mut tmp).unwrap_or(0);
+                        if n == 0 { FreeRtos::delay_ms(5); continue; }
+                        let copy = n.min(buf.len() - len);
+                        buf[len..len + copy].copy_from_slice(&tmp[..copy]);
+                        len += copy;
+                        while let Some(nl) = buf[..len].iter().position(|&b| b == b'\n') {
+                            if let Ok(s) = std::str::from_utf8(&buf[..nl]) {
+                                let t = s.trim();
+                                if t.starts_with('{') {
+                                    if let Some(ds) = parse_state(t) {
+                                        let mut g = shared2.lock().unwrap();
+                                        g.0 = ds; g.1 = Instant::now();
+                                    }
                                 }
                             }
+                            let rest = len - (nl + 1);
+                            buf.copy_within(nl + 1..len, 0);
+                            len = rest;
                         }
-                        let rest = len - (nl + 1);
-                        buf.copy_within(nl + 1..len, 0);
-                        len = rest;
+                        if len >= buf.len() { len = 0; }
                     }
-                    if len >= buf.len() { len = 0; }
-                }
-            }).expect("reader thread");
+                }).expect("reader thread");
+        }
+
+        // ── BLE GATT transport (feature = "ble") ───────────────────────────────
+        // Starts the NimBLE server + writable characteristic; its on_write
+        // callback reassembles newline-delimited JSON into `shared`.
+        #[cfg(feature = "ble")]
+        {
+            info!("BLE mode");
+            ble::start(shared.clone());
+        }
 
         let mut active_tab  = Tab::Sessions;
         let mut view        = View::List;

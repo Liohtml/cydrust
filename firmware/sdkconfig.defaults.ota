@@ -1,0 +1,22 @@
+# Extra sdkconfig layer for the OTA build ONLY.
+#
+# Layer this ON TOP of sdkconfig.defaults — do not use it alone:
+#   $env:ESP_IDF_SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.defaults.ota'
+#   cargo +esp build --features wifi,ota
+#
+# The default USB build must NOT reference this file, so its single-`factory`
+# partition layout is preserved.
+
+# Use the dual-slot OTA partition table (ota_0 / ota_1 + otadata).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+
+# HTTPS for the OTA download: bundle the Mozilla root CAs so that
+# esp_crt_bundle_attach() can validate the firmware server's certificate.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Optional but recommended: if the freshly-booted image never calls
+# ota::mark_valid(), the bootloader rolls back to the previous slot. Our call
+# site marks the slot valid right after a clean WiFi connect.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

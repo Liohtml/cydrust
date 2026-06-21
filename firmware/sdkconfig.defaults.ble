@@ -1,0 +1,40 @@
+# Extra sdkconfig layer for the BLE build ONLY.
+#
+# Layer this ON TOP of sdkconfig.defaults — do not use it alone:
+#   $env:ESP_IDF_SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.defaults.ble'
+#   cargo +esp build --features ble
+#
+# The default USB build must NOT reference this file, so the Bluetooth
+# controller / NimBLE host stay disabled there (no flash/RAM cost, byte-for-byte
+# unchanged behaviour).
+
+# Enable the Bluetooth controller and the NimBLE host stack (BLE only).
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
+# BLE-only: free the Classic-BT controller memory (the CYD's ESP32 supports BR/EDR
+# but we never use it). Keeps the BLE-only build smaller.
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=n
+CONFIG_BTDM_CTRL_MODE_BTDM=n
+
+# A single central (phone / PC relay) connects at a time; one slot is plenty and
+# trims the NimBLE host's RAM footprint.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLASH / PARTITION NOTE
+# ─────────────────────────────────────────────────────────────────────────────
+# The NimBLE host + BT controller add a large chunk of flash (~ several hundred
+# KiB) to the app image. The DEFAULT single-`factory` partition layout
+# (sdkconfig.defaults, factory @ 0x10000) on most CYD modules is 0x100000 (1 MiB)
+# or larger and comfortably fits firmware + NimBLE in release (`opt-level="s"`).
+# If the linker reports the app does not fit the factory partition, enlarge the
+# factory partition with a custom partition table, e.g.:
+#
+#   CONFIG_PARTITION_TABLE_CUSTOM=y
+#   CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ble.csv"
+#
+# with a >=1.5 MiB factory app partition. This is NOT enabled by default here so
+# the BLE build keeps the same flash map as the USB build unless you hit the
+# size limit.

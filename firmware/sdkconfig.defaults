@@ -1,2 +1,29 @@
 # Increase main task stack — default 3584 bytes is too small for our render loop
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OTA build notes (cargo +esp build --features wifi,ota)
+# ─────────────────────────────────────────────────────────────────────────────
+# The default (USB / corporate) build keeps the single-`factory` partition
+# layout, so the settings ABOVE are all it needs. Do NOT add the OTA options
+# here — that would change the partition table for every build and break the
+# plain USB flash.
+#
+# To build the OTA image, layer the extra sdkconfig file on top of this one by
+# pointing the embuild env var at BOTH (semicolon-separated), e.g. in PowerShell:
+#
+#   $env:CARGO_TARGET_DIR='C:\t'
+#   $env:ESP_IDF_SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.defaults.ota'
+#   cargo +esp build --features wifi,ota
+#
+# `sdkconfig.defaults.ota` (committed alongside this file) contains:
+#   CONFIG_PARTITION_TABLE_CUSTOM=y
+#   CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+#   CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y          # esp_crt_bundle_attach (HTTPS)
+#   CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+#   CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y      # optional safety: auto-rollback
+#
+# Alternatively flash the OTA partition table once with espflash directly:
+#   espflash partition-table partitions_ota.csv --to-binary -o ota-pt.bin
+#   espflash write-bin 0x8000 ota-pt.bin
+# (and flash the app image to ota_0 @ 0x20000 instead of factory @ 0x10000).

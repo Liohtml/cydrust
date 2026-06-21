@@ -9,6 +9,17 @@ resolver = "2"
 [features]
 default = []    # USB transport (no WiFi) — corporate default
 wifi = []       # enable WiFi transport: cargo build --features wifi
+# OTA firmware updates over WiFi (esp_https_ota). Requires the `wifi` feature
+# and the OTA partition table (see sdkconfig.defaults.ota / partitions_ota.csv).
+# Build: cargo +esp build --features wifi,ota
+ota = ["wifi"]
+# BLE transport: receive newline-delimited JSON frames over a writable GATT
+# characteristic instead of USB serial (no WiFi, no USB data). Mutually
+# exclusive with `wifi` at the transport-selection cfg in main.rs.
+# Requires the BLE sdkconfig layer (see sdkconfig.defaults.ble).
+# Build: $env:ESP_IDF_SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.defaults.ble'
+#        cargo +esp build --features ble
+ble = ["dep:esp32-nimble"]
 
 [[bin]]
 name = "vibe-firmware"
@@ -37,6 +48,10 @@ serde-json-core = "0.5"
 heapless = "0.8"
 log = "0.4"
 anyhow = { version = "1", features = ["std"] }
+# BLE GATT server (NimBLE). Optional — only pulled in by the `ble` feature.
+# 0.9.x pins esp-idf-svc ^0.50.1, matching our esp-idf-svc 0.50 (0.10+ requires
+# esp-idf-svc 0.51+). NimBLE adds significant flash; see sdkconfig.defaults.ble.
+esp32-nimble = { version = "0.9", optional = true }
 
 [build-dependencies]
 embuild = { version = "0.32", features = ["espidf"] }

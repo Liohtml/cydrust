@@ -1,0 +1,174 @@
+name: Firmware Release
+
+# Builds pre-merged, flashable ESP32 firmware .bin artifacts and attaches them
+# to a GitHub Release whenever a version tag is pushed.
+#
+#   git tag -a v0.2.0 -m "release notes..."
+#   git push origin v0.2.0
+#
+# The produced images are MERGED full-flash images (bootloader + partition
+# table + app) that a user flashes at offset 0x0 with esptool or espflash —
+# no esp Rust toolchain required on their machine. See firmware/RELEASES.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}   # allow manual re-runs (uploads only on tag pushes)
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: firmware
+
+jobs:
+  build-firmware-bins:
+    name: Build & package firmware images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # ── esp Rust toolchain (Xtensa) ───────────────────────────────────────
+      # Installs the `esp` channel + Xtensa LLVM and exports the environment
+      # for subsequent steps. Pinned to a tagged release of the action.
+      - name: Install esp Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: true
+
+      # ── espflash (provides `cargo espflash save-image`) ───────────────────
+      - name: Cache cargo bin (espflash)
+        id: cache-espflash
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-espflash
+          key: ${{ runner.os }}-cargo-espflash-v4
+
+      - name: Install espflash
+        if: steps.cache-espflash.outputs.cache-hit != 'true'
+        run: cargo install espflash --locked
+
+      # ── Cargo registry / git cache ────────────────────────────────────────
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-fwrelease-${{ hashFiles('firmware/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fwrelease-
+            ${{ runner.os }}-cargo-
+
+      # ── Build + package the DEFAULT (USB) image ───────────────────────────
+      # This is the redistributable artifact: it has no baked-in secrets.
+      - name: Package default (USB) firmware
+        env:
+          # Override the Windows-centric C:\t target-dir from .cargo/config.toml.
+          CARGO_TARGET_DIR: /tmp/fw-target
+          ESP_IDF_VERSION: v5.3.2
+          ESPFLASH_SKIP_UPDATE_CHECK: "1"
+        run: |
+          chmod +x package.sh
+          ./package.sh default esp32 ./dist
+
+      # ── (Optional) Build + package the WiFi image ─────────────────────────
+      # Only runs when WiFi secrets are configured as repository/Org secrets.
+      # The wifi build bakes VIBE_* values in at COMPILE time (env!()), so the
+      # resulting image is specific to one network/bridge and is generally NOT
+      # something to publish publicly. Gate it behind a secret being present.
+      - name: Check for WiFi secrets
+        id: wifi_secrets
+        env:
+          VIBE_SSID: ${{ secrets.VIBE_SSID }}
+        run: |
+          if [ -n "${VIBE_SSID:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "VIBE_SSID secret not set — skipping wifi image (expected for public releases)."
+          fi
+
+      - name: Package wifi firmware
+        if: steps.wifi_secrets.outputs.enabled == 'true'
+        env:
+          CARGO_TARGET_DIR: /tmp/fw-target
+          ESP_IDF_VERSION: v5.3.2
+          ESPFLASH_SKIP_UPDATE_CHECK: "1"
+          VIBE_SSID:  ${{ secrets.VIBE_SSID }}
+          VIBE_PASS:  ${{ secrets.VIBE_PASS }}
+          VIBE_HOST:  ${{ secrets.VIBE_HOST }}
+          VIBE_PORT:  ${{ secrets.VIBE_PORT }}
+          VIBE_TOKEN: ${{ secrets.VIBE_TOKEN }}
+        run: |
+          ./package.sh wifi esp32 ./dist
+
+      # ── Verify artifacts ──────────────────────────────────────────────────
+      - name: Verify produced images
+        run: |
+          echo "Contents of dist/:"
+          ls -lh dist/
+          DEFAULT_BIN=dist/vibe-firmware-default-esp32.bin
+          if [ ! -f "$DEFAULT_BIN" ]; then
+            echo "ERROR: $DEFAULT_BIN was not produced" >&2
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$DEFAULT_BIN")
+          echo "Default image size: $SIZE bytes"
+          # Sanity bound: a merged 4 MB flash image; must be > 256 KB.
+          if [ "$SIZE" -lt 262144 ]; then
+            echo "ERROR: default image suspiciously small ($SIZE bytes)" >&2
+            exit 1
+          fi
+
+      - name: Upload build artifacts (CI retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-bins
+          path: firmware/dist/*
+          retention-days: 14
+
+      # ── Attach to the GitHub Release (tag pushes only) ────────────────────
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2.0.8
+        with:
+          files: |
+            firmware/dist/vibe-firmware-*.bin
+            firmware/dist/flash.txt
+            firmware/dist/flash.sh
+            firmware/dist/flash.ps1
+          fail_on_unmatched_files: true
+          body: |
+            ## Pre-built ESP32 firmware (${{ github.ref_name }})
+
+            Flashable **merged** images for the AITRIP ESP32-2432S028R "CYD"
+            (ST7789) and compatible generic ESP32 dev boards. No Rust toolchain
+            needed to flash — only `esptool` or `espflash`.
+
+            **Flash a merged image at offset `0x0`:**
+            ```
+            esptool.py --chip esp32 --port <PORT> --baud 460800 write_flash 0x0 vibe-firmware-default-esp32.bin
+            ```
+            or
+            ```
+            espflash write-bin --port <PORT> 0x0 vibe-firmware-default-esp32.bin
+            ```
+
+            - `vibe-firmware-default-esp32.bin` — USB/serial transport (corporate default, no WiFi).
+            - `flash.txt` / `flash.sh` / `flash.ps1` — copy-paste flash helpers.
+
+            See [`firmware/RELEASES.md`](firmware/RELEASES.md) for full
+            instructions and board-variant support details.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
