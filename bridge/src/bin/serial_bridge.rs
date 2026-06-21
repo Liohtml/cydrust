@@ -172,25 +172,73 @@ fn make_mini(body: &str) -> String {
             let project = s["project"].as_str()?;
             let status  = s["status"].as_str()?;
             let tool    = s["tool"].as_str().unwrap_or("claude");
-            Some(serde_json::json!({"project": project, "status": status, "tool": tool}))
+            let mut o = serde_json::Map::new();
+            o.insert("project".into(), project.into());
+            o.insert("status".into(),  status.into());
+            o.insert("tool".into(),    tool.into());
+            // Detail-view fields (short keys). id always; ageSec when present;
+            // waitingSec + summary only for waiting sessions (keeps payload small).
+            if let Some(id) = s["id"].as_str() {
+                o.insert("i".into(), id.chars().take(12).collect::<String>().into());
+            }
+            if let Some(a) = s["ageSec"].as_i64() {
+                o.insert("a".into(), a.into());
+            }
+            if status == "waiting" {
+                if let Some(w) = s["waitingSec"].as_i64() {
+                    o.insert("ws".into(), w.into());
+                }
+                if let Some(sum) = s["summary"].as_str() {
+                    if !sum.is_empty() {
+                        o.insert("s".into(), sum.chars().take(80).collect::<String>().into());
+                    }
+                }
+            }
+            Some(Value::Object(o))
         })
         .collect();
 
-    // firmware reads pct as 0..1 fraction then × 100
-    let claude_pct = v["usage"]["claude"]["pct"].as_f64().unwrap_or(0.0);
-    // codex: send null when provider is inactive (ok=false)
-    let codex_pct: Value = if v["usage"]["codex"]["ok"].as_bool().unwrap_or(false) {
-        v["usage"]["codex"]["pct"].clone()
-    } else {
-        Value::Null
-    };
-
     serde_json::json!({
         "sessions": sessions,
-        "claude": { "pct": claude_pct },
-        "codex":  { "pct": codex_pct  }
+        "claude": provider_mini(&v["usage"]["claude"]),
+        "codex":  provider_mini(&v["usage"]["codex"]),
     })
     .to_string()
+}
+
+/// Round to 3 decimals so fractions stay short on the wire (0.423 not 0.42318).
+fn round3(x: f64) -> f64 { (x * 1000.0).round() / 1000.0 }
+
+/// Compact per-provider usage object with short keys. Fields are omitted when
+/// at their sentinel value so a quiet provider collapses to a few bytes — the
+/// firmware defaults any absent key. Keeps the whole payload under the ESP32
+/// UART FIFO limit even with both providers active.
+///   p=pct(0..1) r=resetSec wp=weekPct wr=weekResetSec
+///   we=willExhaust b=burnPerHr lo=leftoverPct e=etaClock
+fn provider_mini(pv: &Value) -> Value {
+    let mut m = serde_json::Map::new();
+    let ok = pv["ok"].as_bool().unwrap_or(false);
+    m.insert("ok".into(), ok.into());
+    if !ok { return Value::Object(m); }
+
+    m.insert("p".into(), round3(pv["pct"].as_f64().unwrap_or(0.0)).into());
+    m.insert("r".into(), pv["resetSec"].as_i64().unwrap_or(0).into());
+
+    let wp = pv["weekPct"].as_f64().unwrap_or(-1.0);
+    if wp >= 0.0 { m.insert("wp".into(), round3(wp).into()); }
+    let wr = pv["weekResetSec"].as_i64().unwrap_or(-1);
+    if wr >= 0 { m.insert("wr".into(), wr.into()); }
+    if pv["willExhaustBeforeReset"].as_bool().unwrap_or(false) {
+        m.insert("we".into(), true.into());
+    }
+    let b = pv["burnPerHr"].as_f64().unwrap_or(0.0);
+    if b > 0.0 { m.insert("b".into(), round3(b).into()); }
+    let lo = pv["leftoverPct"].as_f64().unwrap_or(-1.0);
+    if lo >= 0.0 { m.insert("lo".into(), round3(lo).into()); }
+    if let Some(e) = pv["etaClock"].as_str() {
+        if !e.is_empty() { m.insert("e".into(), e.into()); }
+    }
+    Value::Object(m)
 }
 
 /// Strips whitespace from JSON without a full parser (the bridge already
