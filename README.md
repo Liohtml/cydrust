@@ -35,15 +35,19 @@
 
 - **Real-time session cards** — up to 8 concurrent Claude Code sessions rendered on a 320×240 ST7789 LCD at up to 5 fps
 - **Three status states** with distinct colours: Working (green `#4ADE80`), Waiting (amber `#F5A623`), Idle (grey)
+- **Session detail overlay** — tap any card to see the full session view: truncated id, human-readable age (`12s ago` / `5m ago`), waiting duration, and a word-wrapped summary message
+- **Provider icons** — 18×18 pixel Claude and Codex logos alpha-composited directly onto the display (ported from the original LVGL firmware)
+- **Full token-usage tab** — dedicated USAGE screen showing current-period percentage, weekly burn rate, burn-per-hour, leftover percentage, and ETA clock for both Claude and Codex
+- **NVS-persisted settings** — SETTINGS tab lets you adjust backlight brightness (via LEDC PWM, 10–100 %), sleep timer (off/1/5/15/30 min), and dark/light theme; values survive power cycles
 - **Dual transport** — connect over WiFi for a truly wireless monitor, or use USB serial for zero-config corporate networks
 - **Offline detection** — a red banner fires after 3 missed polls (WiFi) or 6 seconds of silence (USB), then self-heals
-- **Token-usage header** — Claude (`#D97757` orange) and Codex (`#A78BFA` purple) usage percentages shown at a glance
+- **Flicker-free rendering** — data-only refreshes repaint each element in-place without a full screen clear; full clears only happen on tab/view switches
 - **Hook integration** — Claude Code `Notification`/`Stop` hook events flip a session to *Waiting*; `POST /ack` clears it
 - **Session sorting** — Waiting → Working → Idle, so what needs attention is always on top
 - **4-hour TTL pruning** — stale sessions aged out automatically; no manual cleanup needed
-- **Cyberpunk colour palette** — dark `#141414` background, neon accents; readable in a dim hackspace at 1 metre
+- **Dark / light theme** — switchable from the SETTINGS tab; colour functions adapt every rendered element
 - **Zero heap allocation on device** — firmware uses `heapless::Vec` and `heapless::String`; no `alloc` OOM surprises
-- **Compact serial protocol** — `serial_bridge` compresses the full `~700 byte` JSON payload to `~80 bytes` before writing to the UART FIFO
+- **Extended serial protocol** — `serial_bridge` emits short-key compact objects (`i`, `a`, `ws`, `s`, `p`, `r`, `wp`, `b`, `lo`, `e`) keeping payloads well under the ESP32 UART FIFO limit even with full usage data
 - **Auth token** — every bridge request requires `X-VibeMonitor-Token`; the device never exposes unauthenticated data
 
 ---
@@ -135,8 +139,9 @@
 | `bridge/src/collector.rs` | `walkdir`, `dirs-next` | Scans `~/.claude/projects` every 2 s |
 | `bridge/src/state.rs` | stdlib `RwLock` | In-memory session store |
 | `bridge/src/hub.rs` | `axum 0.8` | REST endpoints `/state`, `/ack`, `/hook` |
-| `bridge/src/bin/serial_bridge.rs` | `serialport`, `ureq` | USB transport proxy, compacts JSON |
-| `firmware/src/main.rs` | `esp-idf-hal`, `mipidsi`, `embedded-graphics` | Display driver + JSON parser |
+| `bridge/src/bin/serial_bridge.rs` | `serialport`, `ureq` | USB transport proxy, emits compact short-key JSON |
+| `firmware/src/main.rs` | `esp-idf-hal`, `mipidsi`, `embedded-graphics` | Display driver, JSON parser, settings, render loop |
+| `firmware/src/icons.rs` | `embedded-graphics` | Claude + Codex 18×18 provider logos with alpha compositing |
 
 ---
 
@@ -360,8 +365,18 @@ X-VibeMonitor-Token: HGWcjjofIUFUTLxo
     }
   ],
   "usage": {
-    "claude": { "ok": false, "pct": null, "resetSec": null },
-    "codex":  { "ok": false, "pct": null, "resetSec": null }
+    "claude": {
+      "ok": true,
+      "pct": 0.42,             // 0..1 fraction of period limit consumed
+      "resetSec": 7200,        // seconds until usage counter resets
+      "weekPct": 0.18,         // fraction of weekly limit consumed (-1 = unknown)
+      "weekResetSec": 432000,  // seconds until weekly reset (-1 = unknown)
+      "willExhaustBeforeReset": false,
+      "burnPerHr": 0.031,      // usage fraction consumed per hour (0 = unknown)
+      "leftoverPct": 0.58,     // fraction remaining (-1 = unknown)
+      "etaClock": "14:30"      // wall-clock time of reset ("" = unknown)
+    },
+    "codex": { "ok": false }   // provider inactive — only "ok" field present
   }
 }
 ```
@@ -453,7 +468,8 @@ cydrust/
 │   └── .cargo/
 │       └── config.toml             # target = xtensa-esp32-espidf, ESP_IDF_VERSION = v5.3.2
 │   └── src/
-│       └── main.rs                 # Everything: SPI init, render(), parse_state(), WiFi/USB loops
+│       ├── main.rs                 # SPI init, render(), parse_state(), settings (NVS), WiFi/USB loops
+│       └── icons.rs                # Claude + Codex 18×18 logos (r5,g6,b5,alpha pixel arrays)
 │
 └── docs/
     └── assets/
@@ -525,18 +541,18 @@ espflash monitor --port COM7            # Windows
 
 ### Changing the colour palette
 
-All colours are defined as `Rgb565` constants at the top of `firmware/src/main.rs`:
+Colours are returned by small inline functions in `firmware/src/main.rs` so the dark/light theme can switch them at runtime. The dark-theme defaults are:
 
 ```rust
-const C_BG:      Rgb565 = Rgb565::new(2,  5,  2);   // #141414 dark background
-const C_CLAUDE:  Rgb565 = Rgb565::new(26, 29, 11);   // #D97757 Claude orange
-const C_CODEX:   Rgb565 = Rgb565::new(20, 34, 30);   // #A78BFA Codex purple
-const C_WORK:    Rgb565 = Rgb565::new(9,  55, 16);   // #4ADE80 working green
-const C_WAIT:    Rgb565 = Rgb565::new(30, 41,  4);   // #F5A623 waiting amber
-const C_OFFLINE: Rgb565 = Rgb565::new(28, 18,  9);   // #E5484D offline red
+fn c_bg()     -> Rgb565 { Rgb565::new(2,  5,  2)  }  // #141414 dark background
+fn c_claude() -> Rgb565 { Rgb565::new(26, 29, 11) }  // #D97757 Claude orange
+fn c_codex()  -> Rgb565 { Rgb565::new(20, 34, 30) }  // #A78BFA Codex purple
+fn c_work()   -> Rgb565 { Rgb565::new(9,  55, 16) }  // #4ADE80 working green
+fn c_wait()   -> Rgb565 { Rgb565::new(30, 41,  4) }  // #F5A623 waiting amber
+fn c_offline()-> Rgb565 { Rgb565::new(28, 18,  9) }  // #E5484D offline red
 ```
 
-`Rgb565::new(r, g, b)` takes 5-bit R, 6-bit G, 5-bit B values. Use an online RGB565 converter to map hex colours.
+`Rgb565::new(r, g, b)` takes 5-bit R, 6-bit G, 5-bit B values. Use an online RGB565 converter to map hex colours. To add a light theme, check `Settings.dark` inside each function and return an alternate value.
 
 ### Adding support for other AI tools
 
@@ -615,8 +631,12 @@ Check: is `vibe-bridge` running? Is `serial_bridge` running (USB mode)? Check fi
 - [x] USB / serial transport + `serial_bridge` binary
 - [x] Hook integration (`Notification` / `Stop` → waiting state)
 - [x] Offline detection and recovery banner
-- [ ] USAGE tab — render token consumption bar chart on the second tab
-- [ ] SETTINGS tab — interactive WiFi/token config via display + button input
+- [x] USAGE tab — full token usage model: period %, weekly %, burn rate, ETA clock
+- [x] SETTINGS tab — brightness (LEDC PWM), sleep timer, dark/light theme, NVS-persisted
+- [x] Session detail overlay — per-session id, age, wait duration, summary
+- [x] Provider icons — Claude + Codex 18×18 logos on display
+- [x] Flicker-free rendering — background refresh without full screen clear
+- [x] Extended serial protocol — full usage + session metadata in compact short-key format
 - [ ] Claude Code extension — inject hook config automatically via `claude settings`
 - [ ] OTA firmware updates over WiFi (ESP-IDF `esp_https_ota`)
 - [ ] Multi-host federation — aggregate sessions from several developer machines

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Firmware** — Session detail overlay (`View::Detail`): shows truncated id, human-readable age, wait duration, word-wrapped summary
+- **Firmware** — Provider icons: Claude and Codex 18×18 px logos alpha-composited onto display (`icons.rs`, ported from original LVGL firmware)
+- **Firmware** — Full token usage model (`Usage` struct): `pct`, `reset_sec`, `week_pct`, `week_reset_sec`, `will_exhaust`, `burn_per_hr`, `leftover_pct`, `eta_clock`
+- **Firmware** — NVS-persisted `Settings` struct: brightness (LEDC PWM, 10–100 %), sleep timer (off/1/5/15/30 min), dark/light theme
+- **Firmware** — Functional SETTINGS tab with interactive brightness and sleep controls
+- **Firmware** — Flicker-free rendering: `full_clear` flag separates layout changes from data refreshes
+- **Firmware** — Dark/light theme via dynamic colour functions (`c_bg()`, `c_claude()`, etc.)
+- **Firmware** — Helper functions: `humanize_age()`, `humanize_dur()`, `wrap_lines()`, `pct_str()`
+- **Bridge** — `serial_bridge`: extended session wire format with short keys (`i`, `a`, `ws`, `s`)
+- **Bridge** — `serial_bridge`: `provider_mini()` emits compact usage objects (`p`, `r`, `wp`, `wr`, `we`, `b`, `lo`, `e`); fields omitted at sentinel values
+- **Bridge** — `serial_bridge`: `round3()` keeps float values to 3 decimal places on the wire
 - GitHub Actions CI/CD pipelines (bridge build/test/lint, firmware build, release automation)
 - Comprehensive test suite: 59 tests covering state management, HTTP endpoints, and session collection
 - Project documentation: architecture overview, hardware wiring guide, API reference, development guide
