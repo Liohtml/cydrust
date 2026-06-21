@@ -33,6 +33,10 @@ jobs:
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install libudev-dev (Linux — required by serialport)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libudev-dev
+
       - name: Cache Cargo registry and build artefacts
         uses: actions/cache@v4
         with:
@@ -62,6 +66,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      - name: Install libudev-dev (Linux — required by serialport)
+        run: sudo apt-get install -y libudev-dev
 
       - name: Cache Cargo registry and build artefacts
         uses: actions/cache@v4
@@ -118,6 +125,10 @@ jobs:
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libudev-dev (Linux — required by serialport)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y libudev-dev
 
       - name: Cache Cargo registry and build artefacts
         uses: actions/cache@v4
