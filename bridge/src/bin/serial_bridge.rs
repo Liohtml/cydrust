@@ -12,10 +12,9 @@
 ///   cargo run --bin serial_bridge -- --port COM7 --url http://localhost:5151 --token <tok>
 
 use std::{
-    io::{BufRead, BufReader, Write},
-    sync::{Arc, Mutex},
+    io::{Read, Write},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -47,34 +46,23 @@ fn post_ack(url: &str, token: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn ack_reader(port: Arc<Mutex<Box<dyn SerialPort>>>, bridge_url: String, token: String) {
-    thread::spawn(move || {
-        // Clone port reference for the reader side
-        let port_clone = match port.lock().unwrap().try_clone() {
-            Ok(p) => p,
-            Err(e) => { eprintln!("[serial_bridge] port clone failed: {e}"); return; }
-        };
-        let reader = BufReader::new(port_clone);
-        for line in reader.lines() {
-            match line {
-                Err(e) => eprintln!("[serial_bridge] read error: {e}"),
-                Ok(l) => {
-                    let l = l.trim().to_string();
-                    if l.is_empty() { continue; }
-                    // parse {"ack":"<id>"}
-                    if let Some(id) = extract_ack_id(&l) {
-                        match post_ack(&bridge_url, &token, id) {
-                            Ok(_) => println!("[serial_bridge] ack forwarded: {id}"),
-                            Err(e) => eprintln!("[serial_bridge] ack failed: {e}"),
-                        }
-                    } else {
-                        // log line from firmware — just print it
-                        println!("[cyd] {l}");
-                    }
-                }
-            }
+/// Open COM port with the CYD-safe DTR/RTS handling (lowered so opening the
+/// port doesn't reset the ESP32). Returns None if the device isn't present.
+fn open_port(port_name: &str) -> Option<Box<dyn SerialPort>> {
+    match serialport::new(port_name, BAUD)
+        .timeout(Duration::from_millis(100))
+        .data_bits(serialport::DataBits::Eight)
+        .parity(serialport::Parity::None)
+        .stop_bits(serialport::StopBits::One)
+        .open()
+    {
+        Ok(mut p) => {
+            let _ = p.write_data_terminal_ready(false);
+            let _ = p.write_request_to_send(false);
+            Some(p)
         }
-    });
+        Err(_) => None,
+    }
 }
 
 fn extract_ack_id(s: &str) -> Option<&str> {
@@ -119,39 +107,71 @@ fn main() -> Result<()> {
 
     println!("[serial_bridge] {port_name} @ {BAUD}, bridge {bridge_url}");
 
-    let mut port: Box<dyn SerialPort> = serialport::new(&port_name, BAUD)
-        .timeout(Duration::from_millis(100))
-        .data_bits(serialport::DataBits::Eight)
-        .parity(serialport::Parity::None)
-        .stop_bits(serialport::StopBits::One)
-        .open()
-        .with_context(|| format!("opening {port_name}"))?;
+    // Reconnect loop: survives the device being unplugged/replugged. On any
+    // port I/O error we drop the handle and re-open COM port until it returns.
+    let mut rx: Vec<u8> = Vec::new();
+    'reconnect: loop {
+        let mut port = match open_port(&port_name) {
+            Some(p) => { println!("[serial_bridge] connected to {port_name}"); p }
+            None => {
+                eprintln!("[serial_bridge] {port_name} unavailable; retrying in 2s...");
+                thread::sleep(Duration::from_secs(2));
+                continue 'reconnect;
+            }
+        };
+        rx.clear();
+        let mut last_push = Instant::now()
+            .checked_sub(Duration::from_secs(POLL_SECS))
+            .unwrap_or_else(Instant::now);
 
-    // CH340 on CYD wires DTR→GPIO0 and RTS→EN (reset) via capacitors.
-    // Explicitly lower both so opening the port doesn't reset the ESP32.
-    let _ = port.write_data_terminal_ready(false);
-    let _ = port.write_request_to_send(false);
-
-    let port = Arc::new(Mutex::new(port));
-
-    // start ACK reader thread
-    ack_reader(port.clone(), bridge_url.clone(), token.clone());
-
-    // main push loop
-    loop {
-        match get_state(&bridge_url, &token) {
-            Err(e) => eprintln!("[serial_bridge] /state error: {e}"),
-            Ok(json) => {
-                // send only what the CYD firmware needs — full payload is ~700 bytes
-                // which overflows the ESP32 UART FIFO (128 bytes); mini is ~80 bytes.
-                let line = make_mini(&json) + "\n";
-                let mut p = port.lock().unwrap();
-                if let Err(e) = p.write_all(line.as_bytes()) {
-                    eprintln!("[serial_bridge] write error: {e}");
+        loop {
+            // 1) push state to the device every POLL_SECS
+            if last_push.elapsed() >= Duration::from_secs(POLL_SECS) {
+                last_push = Instant::now();
+                match get_state(&bridge_url, &token) {
+                    Err(e) => eprintln!("[serial_bridge] /state error: {e}"),
+                    Ok(json) => {
+                        let line = make_mini(&json) + "\n";
+                        if let Err(e) = port.write_all(line.as_bytes()) {
+                            eprintln!("[serial_bridge] write error ({e}); reconnecting...");
+                            continue 'reconnect;        // device gone → re-open
+                        }
+                        let _ = port.flush();
+                    }
                 }
             }
+
+            // 2) read any ACK / log lines coming back from the device
+            let mut tmp = [0u8; 256];
+            match port.read(&mut tmp) {
+                Ok(0) => {}
+                Ok(n) => {
+                    rx.extend_from_slice(&tmp[..n]);
+                    while let Some(pos) = rx.iter().position(|&b| b == b'\n') {
+                        let line: Vec<u8> = rx.drain(..=pos).collect();
+                        if let Ok(s) = std::str::from_utf8(&line) {
+                            let l = s.trim();
+                            if l.is_empty() { continue; }
+                            if let Some(id) = extract_ack_id(l) {
+                                match post_ack(&bridge_url, &token, id) {
+                                    Ok(_) => println!("[serial_bridge] ack forwarded: {id}"),
+                                    Err(e) => eprintln!("[serial_bridge] ack failed: {e}"),
+                                }
+                            } else {
+                                println!("[cyd] {l}");
+                            }
+                        }
+                    }
+                    if rx.len() > 8192 { rx.clear(); }   // guard against runaway
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}   // normal idle
+                Err(e) => {
+                    eprintln!("[serial_bridge] read error ({e}); reconnecting...");
+                    continue 'reconnect;                 // device gone → re-open
+                }
+            }
+            thread::sleep(Duration::from_millis(40));
         }
-        thread::sleep(Duration::from_secs(POLL_SECS));
     }
 }
 
@@ -184,26 +204,70 @@ fn make_mini(body: &str) -> String {
             if let Some(a) = s["ageSec"].as_i64() {
                 o.insert("a".into(), a.into());
             }
+            // summary/title for ALL sessions (<= 48 chars), not just waiting ones
+            if let Some(sum) = s["summary"].as_str() {
+                if !sum.is_empty() {
+                    o.insert("s".into(), sum.chars().take(48).collect::<String>().into());
+                }
+            }
             if status == "waiting" {
                 if let Some(w) = s["waitingSec"].as_i64() {
                     o.insert("ws".into(), w.into());
                 }
-                if let Some(sum) = s["summary"].as_str() {
-                    if !sum.is_empty() {
-                        o.insert("s".into(), sum.chars().take(80).collect::<String>().into());
-                    }
-                }
             }
             Some(Value::Object(o))
         })
+        .take(6)            // device shows at most 6 cards; bounds the UART payload
         .collect();
 
     serde_json::json!({
         "sessions": sessions,
         "claude": provider_mini(&v["usage"]["claude"]),
         "codex":  provider_mini(&v["usage"]["codex"]),
+        "metrics": metrics_mini(&v["metrics"]),
     })
     .to_string()
+}
+
+/// Compact rollup for the device Metrics tab. Flattens every provider's
+/// per-model breakdown into one list, sorted by tokens desc, top 6 — so the
+/// device shows Opus/Sonnet/Haiku/GPT each on their own row.
+///   m=[{p=provider, n=model, t=tokens, u=usd?}]
+///   tt=total tokens  tu=total usd  ts=total sessions  uc=usd complete
+fn metrics_mini(m: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    let mut rows: Vec<(String, String, f64, Option<f64>)> = vec![];
+    if let Some(provs) = m["providers"].as_object() {
+        for (pname, pv) in provs {
+            if let Some(models) = pv["models"].as_array() {
+                for md in models {
+                    let tk = md["tokens"].as_f64().unwrap_or(0.0);
+                    if tk <= 0.0 { continue; }
+                    let mn = md["model"].as_str().unwrap_or("?").to_string();
+                    rows.push((pname.clone(), mn, tk, md["usd"].as_f64()));
+                }
+            }
+        }
+    }
+    rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    rows.truncate(6);
+    let mut arr: Vec<Value> = vec![];
+    for (p, mn, tk, usd) in rows {
+        let mut o = serde_json::Map::new();
+        o.insert("p".into(), p.into());
+        o.insert("n".into(), mn.chars().take(16).collect::<String>().into());
+        o.insert("t".into(), tk.into());
+        if let Some(u) = usd { o.insert("u".into(), ((u * 100.0).round() / 100.0).into()); }
+        arr.push(Value::Object(o));
+    }
+    out.insert("m".into(), Value::Array(arr));
+    if let Some(t) = m["totals"]["tokens"].as_f64() { out.insert("tt".into(), t.into()); }
+    if let Some(u) = m["totals"]["usd"].as_f64() {
+        out.insert("tu".into(), ((u * 100.0).round() / 100.0).into());
+    }
+    if let Some(s) = m["totals"]["sessions"].as_i64() { out.insert("ts".into(), s.into()); }
+    if m["usdComplete"].as_bool().unwrap_or(false) { out.insert("uc".into(), true.into()); }
+    Value::Object(out)
 }
 
 /// Round to 3 decimals so fractions stay short on the wire (0.423 not 0.42318).

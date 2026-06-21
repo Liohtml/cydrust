@@ -1,9 +1,21 @@
-use crate::model::Session;
+use crate::model::{Metrics, Session, UsageInfo};
 use std::{
     collections::HashMap,
     sync::RwLock,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// Background-computed data (usage gauges, metrics, titles) that the slow loops
+/// refresh and the /state handler reads. Kept separate from the live session
+/// Store so the fast session scan and the slow API/cost loops don't block each
+/// other. (Capacity is derived per-request from these + live session counts.)
+#[derive(Default)]
+pub struct Shared {
+    pub claude_usage: UsageInfo,
+    pub codex_usage:  UsageInfo,
+    pub metrics:      Metrics,
+    pub titles:       HashMap<String, String>,
+}
 
 fn now_secs() -> f64 {
     SystemTime::now()
@@ -33,6 +45,7 @@ impl Store {
         existing.last_activity = existing.last_activity.max(session.last_activity);
         existing.project = session.project;
         existing.tool = session.tool;
+        existing.active_turn = session.active_turn;   // collectors recompute each scan
         g.last_scan = now_secs();
     }
 
@@ -58,6 +71,12 @@ impl Store {
 
     pub fn last_scan(&self) -> f64 {
         self.inner.read().unwrap().last_scan
+    }
+
+    /// Reaper: drop sessions whose last activity is older than `gone_ttl`.
+    pub fn remove_gone(&self, now: f64, gone_ttl: f64) {
+        let mut g = self.inner.write().unwrap();
+        g.sessions.retain(|_, s| (now - s.last_activity) <= gone_ttl);
     }
 }
 

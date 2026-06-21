@@ -6,6 +6,8 @@
 # Rust / Cargo
 # -----------------------------------------------------------------------------
 /target/
+# All nested Cargo build artefacts (bridge/, firmware/, etc.)
+**/target/
 # Keep Cargo.lock for the bridge/ binary crate (intentional)
 # Cargo.lock for library crates would go here, but bridge is a binary
 # firmware/ manages its own Cargo.lock via ESP-IDF conventions
@@ -74,3 +76,11 @@ bridge/config.toml
 # -----------------------------------------------------------------------------
 logs/
 *.log
+
+# -----------------------------------------------------------------------------
+# Tool internals (never source code)
+# -----------------------------------------------------------------------------
+# Claude Code session store (generated at runtime)
+.claude/
+# Playwright MCP recorded sessions / browser state
+.playwright-mcp/

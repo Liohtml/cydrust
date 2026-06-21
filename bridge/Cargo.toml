@@ -27,6 +27,8 @@ dirs-next = "2"
 # serial bridge binary only
 serialport = "4"
 ureq = "2"
+# hub: read OpenCode/Hermes SQLite databases (read-only)
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

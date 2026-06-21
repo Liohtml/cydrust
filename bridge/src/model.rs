@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -16,6 +17,10 @@ pub struct Session {
     pub last_activity: f64,  // epoch seconds
     pub waiting: bool,
     pub waiting_since: Option<f64>,
+    /// True when the model owes a reply (an in-progress turn) — keeps a session
+    /// "working" even when the transcript mtime briefly goes stale mid-turn.
+    #[serde(default)]
+    pub active_turn: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,14 +34,78 @@ pub struct SessionRow {
     pub waiting: bool,
     #[serde(rename = "waitingSec")]
     pub waiting_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Per-provider usage gauge. Mirrors the Python hub's usage.<provider> object.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UsageInfo {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pct: Option<f64>,
+    #[serde(rename = "resetSec", skip_serializing_if = "Option::is_none")]
+    pub reset_sec: Option<u64>,
+    #[serde(rename = "weekPct", skip_serializing_if = "Option::is_none")]
+    pub week_pct: Option<f64>,
+    #[serde(rename = "weekResetSec", skip_serializing_if = "Option::is_none")]
+    pub week_reset_sec: Option<i64>,
+    #[serde(rename = "willExhaustBeforeReset", skip_serializing_if = "Option::is_none")]
+    pub will_exhaust: Option<bool>,
+    #[serde(rename = "burnPerHr", skip_serializing_if = "Option::is_none")]
+    pub burn_per_hr: Option<f64>,
+    #[serde(rename = "leftoverPct", skip_serializing_if = "Option::is_none")]
+    pub leftover_pct: Option<f64>,
+    #[serde(rename = "etaClock", skip_serializing_if = "Option::is_none")]
+    pub eta_clock: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spark: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Capacity {
+    pub status: String,   // "go" / "pace" / "throttle" / "stop"
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct UsageInfo {
-    pub ok: bool,
-    pub pct: Option<f64>,
-    #[serde(rename = "resetSec")]
-    pub reset_sec: Option<u64>,
+pub struct ModelMetric {
+    pub model: String,
+    pub tokens: i64,
+    pub usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ProviderMetric {
+    pub model: Option<String>,
+    #[serde(rename = "tokensIn")]
+    pub tokens_in: i64,
+    #[serde(rename = "tokensOut")]
+    pub tokens_out: i64,
+    pub tokens: i64,
+    pub usd: Option<f64>,
+    pub sessions: i64,
+    pub models: Vec<ModelMetric>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Totals {
+    pub tokens: i64,
+    pub usd: Option<f64>,
+    pub sessions: i64,
+    #[serde(rename = "providersActive")]
+    pub providers_active: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Metrics {
+    pub providers: BTreeMap<String, ProviderMetric>,
+    pub totals: Totals,
+    #[serde(rename = "usdComplete")]
+    pub usd_complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,12 +115,20 @@ pub struct StateResponse {
     pub usage: UsageBlock,
     #[serde(rename = "staleSec")]
     pub stale_sec: i64,
+    pub capacity: Capacity,
+    pub metrics: Metrics,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct UsageBlock {
     pub claude: UsageInfo,
     pub codex: UsageInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode: Option<UsageInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hermes: Option<UsageInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<Capacity>,
 }
 
 #[cfg(test)]
