@@ -419,11 +419,13 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
         .unwrap()
         .as_secs_f64();
 
+    // Distinct projects so the hub's (tool, project) dedup keeps all three rows.
+
     // Idle session: last_activity 200 s ago (> WORKING_SEC=60)
     store.upsert(Session {
         id: "idle-sess".into(),
         tool: "claude".into(),
-        project: "p".into(),
+        project: "idle-proj".into(),
         last_activity: now - 200.0,
         waiting: false,
         waiting_since: None,
@@ -434,7 +436,7 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
     store.upsert(Session {
         id: "working-sess".into(),
         tool: "claude".into(),
-        project: "p".into(),
+        project: "working-proj".into(),
         last_activity: now,
         waiting: false,
         waiting_since: None,
@@ -445,7 +447,7 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
     store.upsert(Session {
         id: "waiting-sess".into(),
         tool: "claude".into(),
-        project: "p".into(),
+        project: "waiting-proj".into(),
         last_activity: now - 30.0,
         waiting: true,
         waiting_since: Some(now - 10.0),
@@ -457,11 +459,11 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let sessions = v["sessions"].as_array().unwrap();
 
-    // Only the working-sess and waiting-sess are within GONE_TTL.
-    // idle-sess is 200 s old — still within 14400 s TTL so it appears too.
+    // All three sessions have distinct (tool, project) keys so they each
+    // produce one row. idle-proj is 200 s old but within GONE_TTL (14400 s).
     assert!(sessions.len() >= 2);
 
-    // First element must be "waiting"
+    // First element must be "waiting" (sort order: Waiting < Working < Idle)
     assert_eq!(
         sessions[0]["status"], "waiting",
         "waiting sessions should sort first"
