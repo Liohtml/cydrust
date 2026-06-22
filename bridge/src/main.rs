@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
                 let claude = usage::claude_usage();
                 let codex = usage::codex_usage();
                 {
-                    let mut s = shared.write().unwrap();
+                    let mut s = shared.write().unwrap_or_else(|p| p.into_inner());
                     s.claude_usage = claude;
                     s.codex_usage = codex;
                 }
@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
         thread::spawn(move || loop {
             if let Err(e) = catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let m = metrics::summarize_metrics(now_secs(), &pricing);
-                shared.write().unwrap().metrics = m;
+                shared.write().unwrap_or_else(|p| p.into_inner()).metrics = m;
             })) {
                 tracing::error!("Panic in metrics loop: {:?}", e);
             }
@@ -179,7 +179,7 @@ async fn main() -> Result<()> {
         thread::spawn(move || loop {
             if let Err(e) = catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let t = metrics::build_titles(now_secs());
-                shared.write().unwrap().titles = t;
+                shared.write().unwrap_or_else(|p| p.into_inner()).titles = t;
             })) {
                 tracing::error!("Panic in titles loop: {:?}", e);
             }

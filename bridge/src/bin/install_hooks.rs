@@ -384,13 +384,21 @@ mod tests {
     fn command_escaping_with_shell_special_chars() {
         // Test that paths and URLs with special chars are properly escaped
         let cmd = build_command(Path::new("C:\\a b\\vibe_hook.exe"), "http://h:1").unwrap();
-        // Path with spaces should be properly escaped
-        assert!(cmd.contains("vibe_hook.exe") || cmd.contains("'C:\\a b\\vibe_hook.exe'"));
-        // URL should be properly escaped
+        // Path with spaces should produce some form of quoting (shlex handles platform-specific escaping)
+        // Just verify the path and space are present and the command is structurally sound
+        assert!(
+            cmd.contains("vibe_hook.exe"),
+            "executable name should be in command"
+        );
+        assert!(
+            cmd.contains("a b"),
+            "spaced path component should be present"
+        );
+        // URL should be present and properly handled
         assert!(cmd.contains("--url") && cmd.contains("http://h:1"));
         // Token should reference env var, not embedded
         assert!(cmd.contains("$VIBE_MONITOR_TOKEN"));
-        assert!(!cmd.contains("--token") || cmd.contains("--token \"$VIBE_MONITOR_TOKEN\""));
+        assert!(cmd.contains("--token \"$VIBE_MONITOR_TOKEN\""));
     }
 
     #[test]
@@ -402,12 +410,20 @@ mod tests {
             "http://localhost:5151?foo=bar",
         )
         .unwrap();
-        // Most important: token must use env var, not be embedded
+        // Most important: token must use env var, not be embedded literal
         assert!(cmd.contains("$VIBE_MONITOR_TOKEN"));
-        assert!(!cmd.contains("--token") || cmd.contains("$VIBE_MONITOR_TOKEN"));
-        // URL should be present
+        assert!(cmd.contains("--token \"$VIBE_MONITOR_TOKEN\""));
+        // Verify the command structure is intact
         assert!(cmd.contains("--url"));
-        // Command should reference both exe and url
-        assert!(cmd.contains("vibe") && cmd.contains("localhost"));
+        assert!(cmd.contains("vibe"));
+        // The injection payload (path with ; rm -rf) should be quoted.
+        // When quoted, the semicolon becomes a literal character, not a command separator.
+        // Verify it's quoted (either single or double quotes contain the dangerous parts)
+        let path_quoted = cmd.contains("\"/usr/bin/vibe'; rm -rf /\"")
+            || cmd.contains("'/usr/bin/vibe'\\'''; rm -rf /'");
+        assert!(
+            path_quoted,
+            "injection path should be quoted to prevent execution in: {cmd}"
+        );
     }
 }

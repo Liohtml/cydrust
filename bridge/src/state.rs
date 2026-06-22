@@ -318,9 +318,10 @@ mod tests {
         store.upsert(session("s1", 1.0));
 
         let store_clone = store.clone();
-        // Spawn a thread that will panic while holding the read lock
+        // Spawn a thread that will panic while holding the write lock
+        // (RwLock only poisons on write, not read)
         let handle = std::thread::spawn(move || {
-            let _g = store_clone.inner.read().unwrap_or_else(|p| p.into_inner());
+            let _g = store_clone.inner.write().unwrap_or_else(|p| p.into_inner());
             panic!("intentional panic to poison lock");
         });
 
