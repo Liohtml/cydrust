@@ -66,8 +66,7 @@ fn build_command(hook_exe: &Path, url: &str) -> Result<String, String> {
     let exe_string = hook_exe.to_string_lossy();
     let exe_quoted = shlex::try_quote(exe_string.as_ref())
         .map_err(|_| "executable path contains NUL byte".to_string())?;
-    let url_quoted = shlex::try_quote(url)
-        .map_err(|_| "URL contains NUL byte".to_string())?;
+    let url_quoted = shlex::try_quote(url).map_err(|_| "URL contains NUL byte".to_string())?;
     Ok(format!(
         "{} --url {} --token \"$VIBE_MONITOR_TOKEN\"",
         exe_quoted, url_quoted
@@ -284,7 +283,9 @@ fn run() -> Result<(), String> {
     println!("  events  : {}", HOOK_EVENTS.join(", "));
     println!("  command : {command}");
     println!();
-    println!("IMPORTANT: Set the VIBE_MONITOR_TOKEN environment variable before running Claude Code:");
+    println!(
+        "IMPORTANT: Set the VIBE_MONITOR_TOKEN environment variable before running Claude Code:"
+    );
     println!("  export VIBE_MONITOR_TOKEN='{}'", token);
     Ok(())
 }
@@ -399,7 +400,8 @@ mod tests {
         let cmd = build_command(
             Path::new("/usr/bin/vibe'; rm -rf /"),
             "http://localhost:5151?foo=bar",
-        ).unwrap();
+        )
+        .unwrap();
         // Most important: token must use env var, not be embedded
         assert!(cmd.contains("$VIBE_MONITOR_TOKEN"));
         assert!(!cmd.contains("--token") || cmd.contains("$VIBE_MONITOR_TOKEN"));

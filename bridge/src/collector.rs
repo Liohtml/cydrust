@@ -5,8 +5,8 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use walkdir::WalkDir;
 use tracing::{debug, warn};
+use walkdir::WalkDir;
 
 // Sibling Codex collector. Declared here (rather than in lib.rs/main.rs) via an
 // explicit #[path] so the new file is reachable as `collector::scan_codex`
@@ -66,7 +66,11 @@ fn tail_lines(path: &Path) -> Vec<String> {
     let size = match file.metadata() {
         Ok(m) => m.len(),
         Err(e) => {
-            warn!("Cannot get metadata for transcript file {}: {}", path.display(), e);
+            warn!(
+                "Cannot get metadata for transcript file {}: {}",
+                path.display(),
+                e
+            );
             return Vec::new();
         }
     };

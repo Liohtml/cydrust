@@ -57,9 +57,7 @@ impl Config {
     fn validate(&self) -> Result<()> {
         // Token must be non-empty and at least 8 characters
         if self.token.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Config validation failed: token is empty"
-            ));
+            return Err(anyhow::anyhow!("Config validation failed: token is empty"));
         }
         if self.token.len() < 8 {
             return Err(anyhow::anyhow!(

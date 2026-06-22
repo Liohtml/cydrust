@@ -90,7 +90,10 @@ impl Store {
     }
 
     pub fn last_scan(&self) -> f64 {
-        self.inner.read().unwrap_or_else(|p| p.into_inner()).last_scan
+        self.inner
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .last_scan
     }
 
     /// Reaper: drop sessions whose last activity is older than `gone_ttl`.
@@ -290,7 +293,8 @@ mod tests {
         // Spawn a thread that will panic while holding the write lock
         let handle = std::thread::spawn(move || {
             let mut g = store_clone.inner.write().unwrap_or_else(|p| p.into_inner());
-            g.sessions.insert("poison_test".into(), session("poison", 1.0));
+            g.sessions
+                .insert("poison_test".into(), session("poison", 1.0));
             panic!("intentional panic to poison lock");
         });
 
