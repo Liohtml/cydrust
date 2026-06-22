@@ -9,6 +9,7 @@ use anyhow::Result;
 use std::{
     collections::HashMap,
     net::SocketAddr,
+    panic::catch_unwind,
     sync::{Arc, RwLock},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -51,6 +52,37 @@ struct Config {
     federation: FederationConfig,
 }
 
+impl Config {
+    /// Validate the configuration for required fields and reasonable values.
+    fn validate(&self) -> Result<()> {
+        // Token must be non-empty and at least 8 characters
+        if self.token.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Config validation failed: token is empty"
+            ));
+        }
+        if self.token.len() < 8 {
+            return Err(anyhow::anyhow!(
+                "Config validation failed: token must be at least 8 characters (got {})",
+                self.token.len()
+            ));
+        }
+
+        // Host and port must form a valid SocketAddr
+        let addr_str = format!("{}:{}", self.host, self.port);
+        if let Err(e) = addr_str.parse::<SocketAddr>() {
+            return Err(anyhow::anyhow!(
+                "Config validation failed: cannot parse {}:{} as SocketAddr: {}",
+                self.host,
+                self.port,
+                e
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 fn default_host() -> String {
     "0.0.0.0".into()
 }
@@ -78,6 +110,9 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Cannot read {config_path}: {e}"))?;
     let cfg: Config = toml::from_str(&cfg_text)?;
 
+    // Validate configuration before using it
+    cfg.validate()?;
+
     // pricing: model-substring -> (input_$/1M, output_$/1M)
     let pricing: HashMap<String, (f64, f64)> = cfg
         .pricing
@@ -93,11 +128,15 @@ async fn main() -> Result<()> {
     {
         let store = store.clone();
         thread::spawn(move || loop {
-            collector::scan_claude(&store);
-            collector::scan_codex(&store);
-            collector_opencode::scan_opencode(&store);
-            collector_hermes::scan_hermes(&store);
-            store.remove_gone(now_secs(), GONE_TTL);
+            if let Err(e) = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                collector::scan_claude(&store);
+                collector::scan_codex(&store);
+                collector_opencode::scan_opencode(&store);
+                collector_hermes::scan_hermes(&store);
+                store.remove_gone(now_secs(), GONE_TTL);
+            })) {
+                tracing::error!("Panic in collector loop: {:?}", e);
+            }
             thread::sleep(Duration::from_secs(2));
         });
     }
@@ -106,12 +145,16 @@ async fn main() -> Result<()> {
     {
         let shared = shared.clone();
         thread::spawn(move || loop {
-            let claude = usage::claude_usage();
-            let codex = usage::codex_usage();
-            {
-                let mut s = shared.write().unwrap();
-                s.claude_usage = claude;
-                s.codex_usage = codex;
+            if let Err(e) = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let claude = usage::claude_usage();
+                let codex = usage::codex_usage();
+                {
+                    let mut s = shared.write().unwrap();
+                    s.claude_usage = claude;
+                    s.codex_usage = codex;
+                }
+            })) {
+                tracing::error!("Panic in usage loop: {:?}", e);
             }
             thread::sleep(Duration::from_secs(60));
         });
@@ -122,8 +165,12 @@ async fn main() -> Result<()> {
         let shared = shared.clone();
         let pricing = pricing.clone();
         thread::spawn(move || loop {
-            let m = metrics::summarize_metrics(now_secs(), &pricing);
-            shared.write().unwrap().metrics = m;
+            if let Err(e) = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let m = metrics::summarize_metrics(now_secs(), &pricing);
+                shared.write().unwrap().metrics = m;
+            })) {
+                tracing::error!("Panic in metrics loop: {:?}", e);
+            }
             thread::sleep(Duration::from_secs(120));
         });
     }
@@ -132,8 +179,12 @@ async fn main() -> Result<()> {
     {
         let shared = shared.clone();
         thread::spawn(move || loop {
-            let t = metrics::build_titles(now_secs());
-            shared.write().unwrap().titles = t;
+            if let Err(e) = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let t = metrics::build_titles(now_secs());
+                shared.write().unwrap().titles = t;
+            })) {
+                tracing::error!("Panic in titles loop: {:?}", e);
+            }
             thread::sleep(Duration::from_secs(120));
         });
     }

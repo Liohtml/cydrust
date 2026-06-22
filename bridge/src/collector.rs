@@ -6,6 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
+use tracing::{debug, warn};
 
 // Sibling Codex collector. Declared here (rather than in lib.rs/main.rs) via an
 // explicit #[path] so the new file is reachable as `collector::scan_codex`
@@ -57,22 +58,30 @@ fn mtime_secs(path: &Path) -> Option<f64> {
 fn tail_lines(path: &Path) -> Vec<String> {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            warn!("Cannot read transcript file {}: {}", path.display(), e);
+            return Vec::new();
+        }
     };
     let size = match file.metadata() {
         Ok(m) => m.len(),
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            warn!("Cannot get metadata for transcript file {}: {}", path.display(), e);
+            return Vec::new();
+        }
     };
     let truncated = size > TAIL_BYTES;
     if truncated {
         // Seek to the tail window. On failure, bail rather than risk reading the
         // whole (possibly huge) file.
-        if file.seek(SeekFrom::Start(size - TAIL_BYTES)).is_err() {
+        if let Err(e) = file.seek(SeekFrom::Start(size - TAIL_BYTES)) {
+            warn!("Cannot seek in transcript file {}: {}", path.display(), e);
             return Vec::new();
         }
     }
     let mut buf = Vec::new();
-    if file.read_to_end(&mut buf).is_err() {
+    if let Err(e) = file.read_to_end(&mut buf) {
+        warn!("Cannot read transcript file {}: {}", path.display(), e);
         return Vec::new();
     }
     // Lossy decode: bad UTF-8 bytes become replacement chars, never an error.
@@ -128,7 +137,15 @@ pub fn scan_claude(store: &Arc<Store>) {
     }
     let now = now_secs();
 
-    for entry in WalkDir::new(&root).max_depth(2).into_iter().flatten() {
+    for entry_result in WalkDir::new(&root).max_depth(2).into_iter() {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                debug!("Cannot read entry in Claude projects directory: {}", e);
+                continue;
+            }
+        };
+
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
