@@ -1,16 +1,23 @@
 bridge:
-  - bridge/**
+  - changed-files:
+      - any-glob-to-any-file: 'bridge/**'
 
 firmware:
-  - firmware/**
+  - changed-files:
+      - any-glob-to-any-file: 'firmware/**'
 
 ci:
-  - .github/**
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
 
 docs:
-  - docs/**
-  - "*.md"
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - '*.md'
 
 breaking-change:
-  - bridge/src/model.rs
-  - bridge/src/hub.rs
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'bridge/src/model.rs'
+          - 'bridge/src/hub.rs'
