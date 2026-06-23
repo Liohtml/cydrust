@@ -12,6 +12,9 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/labeler@v5
         with:
           repo-token: ${{ github.token }}
