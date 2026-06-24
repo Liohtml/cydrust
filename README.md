@@ -259,6 +259,65 @@ Re-run any time; it replaces the VIBE_MARKER block and leaves any other hooks un
 
 > Only `Notification` flips a session to *Waiting*. Other hook events (`Stop`, `PreToolUse`, etc.) are forwarded to the bridge for activity tracking but do not change the waiting flag.
 
+## WSL2 Setup (Windows + WSL)
+
+Running the bridge under WSL2 lets you access the CYD firmware's data path (currently localhost-only in the hub). Follow the steps below **once**, then use `just wsl-up` to start the bridge on any WSL session.
+
+### Prerequisites (Windows host)
+
+1. **Install usbipd-win** — forwards USB devices into WSL:
+   ```powershell
+   winget install usbipd
+   ```
+2. **Bind the CYD to usbipd** (one-time, admin PowerShell):
+   ```powershell
+   usbipd bind --hardware-id 1a86:7523
+   ```
+   (Replace `1a86:7523` with your device's VID:PID if using a different USB-SERIAL adapter; check `usbipd list`.)
+
+### Quick start (WSL side)
+
+```bash
+# From the cydrust repo root:
+just wsl-up
+```
+
+This one command:
+1. Attaches the CYD to WSL (via `usbipd attach`).
+2. Waits for `/dev/ttyUSB0` to appear.
+3. Verifies you're in the `dialout` group (permission to access USB serial).
+4. Starts `vibe-bridge` if not already running.
+5. Execs `serial_bridge` to stream data from the CYD.
+
+### What happens on replug?
+
+The CYD will auto-reconnect:
+1. Windows detects the unplug → usbipd loses the device.
+2. CYD is plugged back in → usbipd re-attaches (auto-attach is the default).
+3. `/dev/ttyUSB0` reappears in WSL.
+4. `serial_bridge` (running in the background) detects the new device and reconnects automatically.
+5. The firmware shows the session list within ~5 seconds.
+
+**Note:** If `usbipd attach` isn't persistent across reboots, you can keep it running in a supervisor (systemd user service or `while` loop).
+
+### Troubleshooting
+
+**`Permission denied on /dev/ttyUSB0`:**
+```bash
+sudo usermod -aG dialout $USER
+wsl --shutdown  # Restart WSL
+```
+
+**Device not appearing after replug:**
+- Check Windows Device Manager — is the CYD re-detected?
+- If so, re-run `just wsl-up` or manually: `usbipd.exe attach --wsl --hardware-id 1a86:7523`
+
+**Bridge already running:**
+- If the bridge didn't start in step 4, you can start it manually in another WSL tab:
+  ```bash
+  cd bridge && cargo run --release --bin vibe-bridge -- config.toml
+  ```
+
 ### 5a — Build and flash (WiFi transport)
 
 Set your WiFi credentials and bridge address as environment variables before building:
