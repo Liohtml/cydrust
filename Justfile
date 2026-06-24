@@ -13,7 +13,7 @@ build-bridge:
 
 # Run bridge with config
 run-bridge config="bridge/config.toml":
-    cd bridge && cargo run --release -- {{config}}
+    cd bridge && cargo run --release --bin vibe-bridge -- {{config}}
 
 # Run serial bridge (USB transport)
 run-serial port="COM7" config="bridge/config.toml":
@@ -48,9 +48,9 @@ check: fmt-check lint test
 build-firmware:
     cd firmware && cargo build --release
 
-# Build firmware with WiFi support
-build-firmware-wifi ssid="" pass="" host="192.168.1.100" port="5151" token="":
-    cd firmware && VIBE_SSID={{ssid}} VIBE_PASS={{pass}} VIBE_HOST={{host}} VIBE_PORT={{port}} VIBE_TOKEN={{token}} cargo build --release --features wifi
+# Build firmware with WiFi support (set VIBE_SSID, VIBE_PASS, VIBE_HOST, VIBE_PORT, VIBE_TOKEN env vars first, see docs/hardware.md)
+build-firmware-wifi:
+    cd firmware && cargo build --release --features wifi
 
 # Flash firmware to device
 flash:
