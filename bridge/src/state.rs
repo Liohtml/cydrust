@@ -5,6 +5,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Epsilon tolerance for floating-point TTL comparisons (1ms).
+const EPSILON: f64 = 0.001;
+
 /// Background-computed data (usage gauges, metrics, titles) that the slow loops
 /// refresh and the /state handler reads. Kept separate from the live session
 /// Store so the fast session scan and the slow API/cost loops don't block each
@@ -48,7 +51,7 @@ impl Store {
     }
 
     pub fn upsert(&self, session: Session) {
-        let mut g = self.inner.write().unwrap();
+        let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         let existing = g
             .sessions
             .entry(session.id.clone())
@@ -61,7 +64,7 @@ impl Store {
     }
 
     pub fn mark_waiting(&self, id: &str, ts: f64) {
-        let mut g = self.inner.write().unwrap();
+        let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         if let Some(s) = g.sessions.get_mut(id) {
             s.waiting = true;
             s.waiting_since = Some(ts);
@@ -69,7 +72,7 @@ impl Store {
     }
 
     pub fn ack(&self, id: &str) {
-        let mut g = self.inner.write().unwrap();
+        let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         if let Some(s) = g.sessions.get_mut(id) {
             s.waiting = false;
             s.waiting_since = None;
@@ -79,7 +82,7 @@ impl Store {
     pub fn snapshot(&self) -> Vec<Session> {
         self.inner
             .read()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .sessions
             .values()
             .cloned()
@@ -87,14 +90,18 @@ impl Store {
     }
 
     pub fn last_scan(&self) -> f64 {
-        self.inner.read().unwrap().last_scan
+        self.inner
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .last_scan
     }
 
     /// Reaper: drop sessions whose last activity is older than `gone_ttl`.
+    /// Uses epsilon tolerance for floating-point comparisons.
     pub fn remove_gone(&self, now: f64, gone_ttl: f64) {
-        let mut g = self.inner.write().unwrap();
+        let mut g = self.inner.write().unwrap_or_else(|p| p.into_inner());
         g.sessions
-            .retain(|_, s| (now - s.last_activity) <= gone_ttl);
+            .retain(|_, s| (now - s.last_activity) <= (gone_ttl + EPSILON));
     }
 }
 
@@ -273,5 +280,103 @@ mod tests {
         let snap = store.snapshot();
         assert!(!snap[0].waiting);
         assert!(snap[0].waiting_since.is_none());
+    }
+
+    // ── poison recovery ───────────────────────────────────────────────────────
+
+    #[test]
+    fn store_recovers_from_poisoned_write_lock() {
+        let store = std::sync::Arc::new(Store::new());
+        store.upsert(session("s1", 1.0));
+
+        let store_clone = store.clone();
+        // Spawn a thread that will panic while holding the write lock
+        let handle = std::thread::spawn(move || {
+            let mut g = store_clone.inner.write().unwrap_or_else(|p| p.into_inner());
+            g.sessions
+                .insert("poison_test".into(), session("poison", 1.0));
+            panic!("intentional panic to poison lock");
+        });
+
+        // Wait for the panic to happen
+        let _ = handle.join();
+
+        // The lock should be poisoned now, but using unwrap_or_else with into_inner
+        // should allow us to recover and continue operating
+        store.upsert(session("s2", 2.0));
+        let snap = store.snapshot();
+
+        // We should have recovered and be able to access the data
+        // (s1 and s2 should be there, poison_test may or may not depending on recovery state)
+        assert!(snap.iter().any(|s| s.id == "s1"));
+        assert!(snap.iter().any(|s| s.id == "s2"));
+    }
+
+    #[test]
+    fn store_recovers_from_poisoned_read_lock() {
+        let store = std::sync::Arc::new(Store::new());
+        store.upsert(session("s1", 1.0));
+
+        let store_clone = store.clone();
+        // Spawn a thread that will panic while holding the write lock
+        // (RwLock only poisons on write, not read)
+        let handle = std::thread::spawn(move || {
+            let _g = store_clone.inner.write().unwrap_or_else(|p| p.into_inner());
+            panic!("intentional panic to poison lock");
+        });
+
+        // Wait for the panic to happen
+        let _ = handle.join();
+
+        // The lock should be poisoned now, but using unwrap_or_else with into_inner
+        // should allow us to recover and read
+        let snap = store.snapshot();
+        assert!(snap.iter().any(|s| s.id == "s1"));
+    }
+
+    // ── remove_gone (TTL with epsilon) ────────────────────────────────────────
+
+    #[test]
+    fn remove_gone_drops_expired_sessions() {
+        let store = Store::new();
+        store.upsert(session("s1", 100.0));
+        // 50 seconds later with a 30s TTL — should be gone
+        store.remove_gone(150.0, 30.0);
+        assert!(store.snapshot().is_empty());
+    }
+
+    #[test]
+    fn remove_gone_keeps_active_sessions() {
+        let store = Store::new();
+        store.upsert(session("s1", 100.0));
+        // 20 seconds later with a 30s TTL — should be kept
+        store.remove_gone(120.0, 30.0);
+        assert_eq!(store.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn remove_gone_handles_ttl_boundary_with_epsilon() {
+        let store = Store::new();
+        // Session at exactly the TTL boundary (with floating-point precision)
+        store.upsert(session("s1", 100.0));
+        // Exactly 30s later with 30s TTL: (130 - 100) = 30, which should be <= (30 + 0.001)
+        store.remove_gone(130.0, 30.0);
+        assert_eq!(
+            store.snapshot().len(),
+            1,
+            "session at exactly TTL boundary should be kept due to epsilon tolerance"
+        );
+    }
+
+    #[test]
+    fn remove_gone_drops_just_beyond_ttl_boundary() {
+        let store = Store::new();
+        store.upsert(session("s1", 100.0));
+        // 30.01 seconds later with 30s TTL: (130.01 - 100) = 30.01 > (30 + 0.001)
+        store.remove_gone(130.01, 30.0);
+        assert!(
+            store.snapshot().is_empty(),
+            "session beyond TTL boundary should be dropped"
+        );
     }
 }

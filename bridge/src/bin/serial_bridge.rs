@@ -7,9 +7,13 @@
 /// ACK lines sent back by the CYD (`{"ack":"<id>"}`) are forwarded via POST /ack
 /// to the bridge so sessions clear their "waiting" state.
 ///
+/// Token is resolved with precedence: VIBE_MONITOR_TOKEN > config.toml > CLI --token
+/// Env vars are preferred for security to avoid exposing tokens in process arguments.
+///
 /// Usage:
 ///   cargo run --bin serial_bridge -- --port COM7
-///   cargo run --bin serial_bridge -- --port COM7 --url http://localhost:5151 --token <tok>
+///   cargo run --bin serial_bridge -- --port COM7 --url http://localhost:5151
+///   # Token from VIBE_MONITOR_TOKEN env var or config.toml
 use std::{
     io::{Read, Write},
     thread,
@@ -103,17 +107,32 @@ fn main() -> Result<()> {
         i += 1;
     }
 
-    // resolve token: --token flag > config.toml
-    let token = match token {
-        Some(t) => t,
-        None => {
-            let content = std::fs::read_to_string(&config_path)
-                .with_context(|| format!("reading {config_path}"))?;
-            let parsed: toml::Value = content.parse().context("parse config.toml")?;
-            parsed["token"]
-                .as_str()
-                .with_context(|| "token not found in config.toml")?
-                .to_string()
+    // resolve token: VIBE_MONITOR_TOKEN env var > config.toml > CLI --token flag
+    // Env vars are preferred for security to avoid exposing tokens in process arguments.
+    let token = if let Ok(env_token) = std::env::var("VIBE_MONITOR_TOKEN") {
+        env_token
+    } else {
+        // Fall back to config file
+        match std::fs::read_to_string(&config_path) {
+            Ok(content) => {
+                let parsed: toml::Value = content.parse().context("parse config.toml")?;
+                parsed["token"]
+                    .as_str()
+                    .or(token.as_deref())
+                    .with_context(|| {
+                        "token not found in VIBE_MONITOR_TOKEN env var, config.toml, or --token flag"
+                    })?
+                    .to_string()
+            }
+            Err(_) if token.is_some() => {
+                // Config file doesn't exist, but CLI flag was provided
+                token.unwrap()
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "reading {config_path}: {e} (and no VIBE_MONITOR_TOKEN env var or --token flag provided)"
+                ));
+            }
         }
     };
 

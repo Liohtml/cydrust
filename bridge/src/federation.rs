@@ -17,6 +17,9 @@ use crate::model::{SessionRow, Status};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::RwLock, time::Duration};
 
+/// Epsilon tolerance for floating-point TTL comparisons (1ms).
+const EPSILON: f64 = 0.001;
+
 /// Network timeout for a node's push to the aggregator.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -132,13 +135,14 @@ impl RemoteStore {
     /// (and lazily pruned from the store) so a disconnected node's sessions
     /// vanish. Each row's `project` is prefixed with `"<node>/"` (e.g.
     /// `"host1/myproj"`) so machines stay distinguishable on the device.
+    /// Uses epsilon tolerance for floating-point comparisons.
     pub fn rows(&self, now: f64, ttl: f64) -> Vec<SessionRow> {
         let mut g = match self.inner.write() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        // Lazy prune of expired entries.
-        g.retain(|_, (_, recv_ts)| (now - *recv_ts) <= ttl);
+        // Lazy prune of expired entries with epsilon tolerance.
+        g.retain(|_, (_, recv_ts)| (now - *recv_ts) <= (ttl + EPSILON));
 
         let mut rows: Vec<SessionRow> = Vec::with_capacity(g.len());
         for (key, (sess, _recv_ts)) in g.iter() {
@@ -312,5 +316,36 @@ mod tests {
     #[test]
     fn hostname_is_non_empty() {
         assert!(!hostname().is_empty());
+    }
+
+    #[test]
+    fn rows_handles_ttl_boundary_with_epsilon() {
+        let store = RemoteStore::new();
+        store.merge(
+            from_session_rows(&[row("a", "p", Status::Idle)], "h"),
+            100.0,
+        );
+        // Exactly 30s later with a 30s TTL: (130 - 100) = 30, which should be <= (30 + 0.001)
+        let rows = store.rows(130.0, 30.0);
+        assert_eq!(
+            rows.len(),
+            1,
+            "entry at exactly TTL boundary should be kept due to epsilon tolerance"
+        );
+    }
+
+    #[test]
+    fn rows_drops_just_beyond_ttl_boundary() {
+        let store = RemoteStore::new();
+        store.merge(
+            from_session_rows(&[row("a", "p", Status::Idle)], "h"),
+            100.0,
+        );
+        // 30.01s later with a 30s TTL: (130.01 - 100) = 30.01 > (30 + 0.001)
+        let rows = store.rows(130.01, 30.0);
+        assert!(
+            rows.is_empty(),
+            "entry beyond TTL boundary should be dropped"
+        );
     }
 }

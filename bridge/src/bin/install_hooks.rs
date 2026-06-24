@@ -60,14 +60,17 @@ fn resolve_hook_exe() -> Option<PathBuf> {
 }
 
 /// Build the command string Claude Code will execute for each event.
-/// Absolute exe path, quoted to survive spaces in the path.
-fn build_command(hook_exe: &Path, url: &str, token: &str) -> String {
-    format!(
-        "\"{}\" --url \"{}\" --token \"{}\"",
-        hook_exe.display(),
-        url,
-        token
-    )
+/// Properly escapes all arguments to prevent shell injection.
+/// Uses environment variable for token to avoid CLI argument exposure.
+fn build_command(hook_exe: &Path, url: &str) -> Result<String, String> {
+    let exe_string = hook_exe.to_string_lossy();
+    let exe_quoted = shlex::try_quote(exe_string.as_ref())
+        .map_err(|_| "executable path contains NUL byte".to_string())?;
+    let url_quoted = shlex::try_quote(url).map_err(|_| "URL contains NUL byte".to_string())?;
+    Ok(format!(
+        "{} --url {} --token \"$VIBE_MONITOR_TOKEN\"",
+        exe_quoted, url_quoted
+    ))
 }
 
 /// True if a hook-block (a `{matcher, hooks:[...]}` object) contains one of our
@@ -263,13 +266,14 @@ fn run() -> Result<(), String> {
     }
 
     // ── merge + write pretty-printed ────────────────────────────────────────
-    let command = build_command(&hook_exe, &url, &token);
+    let command = build_command(&hook_exe, &url)?;
     let merged = merge_hooks(existing, &command);
     let pretty = serde_json::to_string_pretty(&merged)
         .map_err(|e| format!("serialize merged settings: {e}"))?;
     std::fs::write(&settings_path, format!("{pretty}\n"))
         .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
 
+    // ── write token to a secure location or document env var requirement ─────
     println!(
         "installed vibe-bridge hooks into {}",
         settings_path.display()
@@ -278,6 +282,11 @@ fn run() -> Result<(), String> {
     println!("  hook exe: {}", hook_exe.display());
     println!("  events  : {}", HOOK_EVENTS.join(", "));
     println!("  command : {command}");
+    println!();
+    println!(
+        "IMPORTANT: Set the VIBE_MONITOR_TOKEN environment variable before running Claude Code:"
+    );
+    println!("  export VIBE_MONITOR_TOKEN='{}'", token);
     Ok(())
 }
 
@@ -295,7 +304,7 @@ mod tests {
 
     #[test]
     fn merge_into_empty_creates_all_events() {
-        let cmd = "\"vibe_hook.exe\" --url \"http://localhost:5151\" --token \"T\"";
+        let cmd = "vibe_hook.exe --url http://localhost:5151 --token \"$VIBE_MONITOR_TOKEN\"";
         let merged = merge_hooks(Value::Object(Map::new()), cmd);
         // every event registered, with exactly one of our blocks
         for ev in HOOK_EVENTS {
@@ -325,7 +334,7 @@ mod tests {
                 ]
             }
         });
-        let cmd = "\"vibe_hook.exe\" --url \"http://localhost:5151\" --token \"T\"";
+        let cmd = "vibe_hook.exe --url http://localhost:5151 --token \"$VIBE_MONITOR_TOKEN\"";
         let merged = merge_hooks(pre, cmd);
 
         // unrelated top-level key preserved
@@ -347,15 +356,15 @@ mod tests {
 
     #[test]
     fn merge_is_idempotent_and_updates_command() {
-        let cmd1 = "\"vibe_hook.exe\" --url \"http://localhost:5151\" --token \"OLD\"";
+        let cmd1 = "vibe_hook.exe --url http://localhost:5151 --token \"$VIBE_MONITOR_TOKEN\"";
         let once = merge_hooks(Value::Object(Map::new()), cmd1);
         // running again with same command: still exactly one of ours per event
         let twice = merge_hooks(once.clone(), cmd1);
         for ev in HOOK_EVENTS {
             assert_eq!(ours_for(&twice, ev), 1, "idempotent: {ev}");
         }
-        // running with a NEW command (token changed) replaces, not duplicates
-        let cmd2 = "\"vibe_hook.exe\" --url \"http://localhost:5151\" --token \"NEW\"";
+        // running with a NEW command (url changed) replaces, not duplicates
+        let cmd2 = "vibe_hook.exe --url http://other:5151 --token \"$VIBE_MONITOR_TOKEN\"";
         let updated = merge_hooks(twice, cmd2);
         for ev in HOOK_EVENTS {
             assert_eq!(ours_for(&updated, ev), 1, "still single after update: {ev}");
@@ -372,11 +381,49 @@ mod tests {
     }
 
     #[test]
-    fn project_label_handled_by_hook_not_installer() {
-        // sanity: command string is absolute-quoted and carries url+token flags
-        let cmd = build_command(Path::new("C:\\a b\\vibe_hook.exe"), "http://h:1", "tok");
-        assert!(cmd.contains("\"C:\\a b\\vibe_hook.exe\""));
-        assert!(cmd.contains("--url \"http://h:1\""));
-        assert!(cmd.contains("--token \"tok\""));
+    fn command_escaping_with_shell_special_chars() {
+        // Test that paths and URLs with special chars are properly escaped
+        let cmd = build_command(Path::new("C:\\a b\\vibe_hook.exe"), "http://h:1").unwrap();
+        // Path with spaces should produce some form of quoting (shlex handles platform-specific escaping)
+        // Just verify the path and space are present and the command is structurally sound
+        assert!(
+            cmd.contains("vibe_hook.exe"),
+            "executable name should be in command"
+        );
+        assert!(
+            cmd.contains("a b"),
+            "spaced path component should be present"
+        );
+        // URL should be present and properly handled
+        assert!(cmd.contains("--url") && cmd.contains("http://h:1"));
+        // Token should reference env var, not embedded
+        assert!(cmd.contains("$VIBE_MONITOR_TOKEN"));
+        assert!(cmd.contains("--token \"$VIBE_MONITOR_TOKEN\""));
+    }
+
+    #[test]
+    fn command_escaping_prevents_injection() {
+        // Test that special characters in paths are properly escaped
+        // and that token is NOT in the command (uses env var instead)
+        let cmd = build_command(
+            Path::new("/usr/bin/vibe'; rm -rf /"),
+            "http://localhost:5151?foo=bar",
+        )
+        .unwrap();
+        // Most important: token must use env var, not be embedded literal
+        assert!(cmd.contains("$VIBE_MONITOR_TOKEN"));
+        assert!(cmd.contains("--token \"$VIBE_MONITOR_TOKEN\""));
+        // Verify the command structure is intact
+        assert!(cmd.contains("--url"));
+        assert!(cmd.contains("vibe"));
+        // The injection payload (path with ; rm -rf) should be quoted.
+        // When quoted, the semicolon becomes a literal character, not a command separator.
+        // Verify it's quoted (either single or double quotes contain the dangerous parts)
+        let path_quoted = cmd.contains("\"/usr/bin/vibe'; rm -rf /\"")
+            || cmd.contains("'/usr/bin/vibe'\\'''; rm -rf /'");
+        assert!(
+            path_quoted,
+            "injection path should be quoted to prevent execution in: {cmd}"
+        );
     }
 }

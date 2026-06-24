@@ -13,13 +13,14 @@
 /// HARD RULE: a monitoring hook must NEVER break the user's Claude Code session.
 /// We use a short timeout, swallow every error, and always exit 0 quickly.
 ///
-/// Configuration (precedence: CLI flags > env > config.toml > defaults):
-///   --url   / VIBE_HUB_URL   base hub url   (default http://localhost:5151)
-///   --token / VIBE_TOKEN     auth token     (default empty)
-///   --config <path>          a bridge config.toml to read token/host/port from
+/// Configuration (precedence: VIBE_MONITOR_TOKEN env var > CLI --token flag > VIBE_TOKEN env var > config.toml > defaults):
+///   --url   / VIBE_HUB_URL      base hub url   (default http://localhost:5151)
+///   --token / VIBE_MONITOR_TOKEN auth token    (VIBE_MONITOR_TOKEN recommended for security)
+///   VIBE_TOKEN (deprecated)     legacy token env var
+///   --config <path>             a bridge config.toml to read token/host/port from
 ///
-/// The registered command (written by install_hooks) passes
-/// `--url <base> --token <tok>`; env + config.toml are fallbacks for manual use.
+/// The recommended approach (install_hooks) sets VIBE_MONITOR_TOKEN in the environment
+/// and passes `--url <base>`; the token is NOT exposed in the command line.
 use std::{
     io::Read,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -101,7 +102,11 @@ fn run() {
         }
     }
 
-    // ── resolve config: flags > env > config.toml > default ─────────────────
+    // ── resolve config: VIBE_MONITOR_TOKEN > CLI --token > env > config.toml > default ─
+    // Prioritize VIBE_MONITOR_TOKEN (the recommended secure approach) over legacy methods.
+    let token_from_env_secure = std::env::var("VIBE_MONITOR_TOKEN").ok();
+    let token_from_env_legacy = std::env::var("VIBE_TOKEN").ok();
+
     if let Some(cfg) = config_path.as_deref().and_then(from_config) {
         let (cfg_token, cfg_url) = cfg;
         if token.is_none() {
@@ -114,8 +119,9 @@ fn run() {
     let url = url
         .or_else(|| std::env::var("VIBE_HUB_URL").ok())
         .unwrap_or_else(|| DEFAULT_URL.to_string());
-    let token = token
-        .or_else(|| std::env::var("VIBE_TOKEN").ok())
+    let token = token_from_env_secure
+        .or(token)
+        .or(token_from_env_legacy)
         .unwrap_or_default();
 
     // ── read the hook payload Claude Code pipes on stdin ────────────────────

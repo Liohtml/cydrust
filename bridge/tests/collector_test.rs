@@ -33,8 +33,7 @@ fn create_jsonl(parent: &std::path::Path, stem: &str) -> PathBuf {
 fn expected_project(dir_name: &str) -> String {
     dir_name
         .split('-')
-        .filter(|p| !p.is_empty())
-        .last()
+        .rfind(|p| !p.is_empty())
         .unwrap_or(dir_name)
         .to_string()
 }
@@ -126,7 +125,7 @@ fn scan_dir(root: &std::path::Path, store: &Arc<Store>) {
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .map(|n| expected_project(n))
+            .map(expected_project)
             .unwrap_or_else(|| "?".into());
         let last_activity = {
             let meta = std::fs::metadata(path).ok();
