@@ -203,7 +203,7 @@ port  = 5151
 ```bash
 cd bridge
 cargo build --release
-cargo run --release -- config.toml
+cargo run --release --bin vibe-bridge -- config.toml
 # => INFO vibe-bridge listening on http://0.0.0.0:5151
 ```
 
@@ -590,7 +590,7 @@ cydrust/
 
 ```bash
 cd bridge
-cargo run -- config.toml
+cargo run --bin vibe-bridge -- config.toml
 ```
 
 Verify with curl:
