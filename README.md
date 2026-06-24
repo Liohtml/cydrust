@@ -179,6 +179,23 @@
 | `espflash` | latest | `cargo install espflash` |
 | Python 3 + pip | 3.10+ | Required by `embuild` for ESP-IDF download |
 
+#### Linux prerequisites
+
+On a fresh Linux or WSL2 install, install the following system packages:
+
+```bash
+sudo apt install -y build-essential pkg-config libudev-dev
+```
+
+Additionally, add your user to the `dialout` group so `serial_bridge` can access USB serial ports without `sudo`:
+
+```bash
+sudo usermod -aG dialout $USER
+# Log out and back in (or: wsl --shutdown; restart WSL)
+```
+
+If you skip this step, `serial_bridge` will fail with `Permission denied` when opening `/dev/ttyUSB0`.
+
 ### 1 — Clone
 
 ```bash
