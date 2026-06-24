@@ -39,6 +39,14 @@ fn get_state(token: Option<&str>) -> Request<Body> {
     builder.body(Body::empty()).unwrap()
 }
 
+fn get_metrics(token: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method(Method::GET).uri("/metrics");
+    if let Some(t) = token {
+        builder = builder.header("X-VibeMonitor-Token", t);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
 fn post_json(uri: &str, token: Option<&str>, body: &str) -> Request<Body> {
     let mut builder = Request::builder()
         .method(Method::POST)
@@ -152,6 +160,35 @@ async fn get_state_fresh_session_appears_in_response() {
     assert_eq!(sessions[0]["id"], "fresh-session");
     assert_eq!(sessions[0]["tool"], "claude");
     assert_eq!(sessions[0]["project"], "demo");
+}
+
+// ── GET /metrics ────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn get_metrics_with_valid_token_returns_200() {
+    let (app, _store) = make_app();
+    let resp = app.oneshot(get_metrics(Some(TEST_TOKEN))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(
+        body.contains("vibemonitor_up 1"),
+        "metrics body should expose the liveness gauge"
+    );
+}
+
+#[tokio::test]
+async fn get_metrics_without_token_returns_401() {
+    let (app, _store) = make_app();
+    let resp = app.oneshot(get_metrics(None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn get_metrics_with_wrong_token_returns_401() {
+    let (app, _store) = make_app();
+    let resp = app.oneshot(get_metrics(Some("wrong-token"))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 // ── POST /hook ────────────────────────────────────────────────────────────────

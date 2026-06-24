@@ -41,7 +41,7 @@
 - **Provider icons** — 18×18 px logos for all four providers alpha-composited onto the display via `draw_badge()`
 - **USAGE tab** — live rate-limit gauges (5h % used, weekly %, burn/hr, leftover %, ETA clock) for Claude and Codex; sourced from the Anthropic API and Codex session files
 - **METRICS tab** — today's per-model token/cost breakdown (up to 6 models); share bar + % label; totals line with optional USD sum; badge icon per provider row
-- **Prometheus `/metrics`** — scrape-ready Prometheus text exposition at `:5151/metrics`; no auth required (serve localhost-only if desired); covers session counts, per-model token/cost gauges, and provider totals
+- **Prometheus `/metrics`** — scrape-ready Prometheus text exposition at `:5151/metrics`; token-protected (scrape with `bearer_token`); covers session counts, per-model token/cost gauges, and provider totals
 - **Multi-host federation** — `POST /federation/ingest` lets remote bridge nodes push session rows to an aggregator; `RemoteStore` keyed by `node/session-id` with 30 s TTL; aggregator `/state` merges local + remote rows transparently
 - **Hook injection binaries** — `install_hooks` merges six hook events into `~/.claude/settings.json` idempotently (VIBE_MARKER blocks, preserves user hooks); `vibe_hook` is the lightweight per-event process spawned by Claude Code (exits 0 always, 1500 ms timeout)
 - **NVS-persisted settings** — SETTINGS tab: backlight brightness (LEDC PWM, 10–100 %), sleep timer, dark/light theme; all survive power cycles
@@ -485,10 +485,11 @@ All other event names (including `"Stop"`) are silently accepted and ignored for
 
 ### `GET /metrics`
 
-Prometheus text exposition (no auth required — intended for `localhost`-scoped scraping).
+Prometheus text exposition. Requires the bearer token (same `X-VibeMonitor-Token` header as the other endpoints), so usage and cost data is not exposed unauthenticated when the hub binds a non-localhost address. Configure your Prometheus scrape job with `bearer_token`/`authorization`, or a custom `X-VibeMonitor-Token` header.
 
 ```
 GET /metrics HTTP/1.1
+X-VibeMonitor-Token: your-secret-token-here
 ```
 
 **Response** `200 OK` — `Content-Type: text/plain; version=0.0.4`

@@ -34,6 +34,8 @@ walkdir = "2"
 dirs-next = "2"
 # shell escaping for safe command generation
 shlex = "1"
+# constant-time token comparison (timing-oracle resistance)
+subtle = "2"
 # serial bridge binary only
 serialport = "4"
 ureq = "2"
