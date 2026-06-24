@@ -82,7 +82,10 @@ impl Config {
 }
 
 fn default_host() -> String {
-    "0.0.0.0".into()
+    // Localhost-only by default to match config.example.toml and avoid silently
+    // exposing the bridge on every interface when `host` is omitted. Users who
+    // need WiFi-firmware connectivity set host = "0.0.0.0" (or their LAN IP).
+    "127.0.0.1".into()
 }
 fn default_port() -> u16 {
     5151
@@ -200,7 +203,7 @@ async fn main() -> Result<()> {
             let token = cfg.token.clone();
             thread::spawn(move || loop {
                 let rows = {
-                    let sh = shared.read().unwrap();
+                    let sh = shared.read().unwrap_or_else(|p| p.into_inner());
                     hub::derive_rows_pub(&store, &sh, now_secs())
                 };
                 let payload = federation::from_session_rows(&rows, &node_id);

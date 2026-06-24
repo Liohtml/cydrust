@@ -17,6 +17,7 @@ use std::{
     sync::{Arc, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
+use subtle::ConstantTimeEq;
 
 const WORKING_SEC: f64 = 60.0;
 const GONE_TTL: f64 = 14400.0;
@@ -32,7 +33,9 @@ fn check_token(headers: &HeaderMap, token: &str) -> bool {
     headers
         .get("X-VibeMonitor-Token")
         .and_then(|v| v.to_str().ok())
-        .map(|t| t == token)
+        // Constant-time comparison to avoid leaking the token via a timing
+        // oracle. `ct_eq` returns Choice(0) for mismatched lengths.
+        .map(|t| bool::from(t.as_bytes().ct_eq(token.as_bytes())))
         .unwrap_or(false)
 }
 
@@ -66,7 +69,7 @@ pub fn create_router(
     };
     Router::new()
         .route("/state", get(state_handler))
-        .route("/metrics", get(metrics_handler)) // Prometheus scrape (localhost, no token)
+        .route("/metrics", get(metrics_handler)) // Prometheus scrape (requires token)
         .route("/ack", post(ack_handler))
         .route("/hook", post(hook_handler))
         .route("/federation/ingest", post(ingest_handler))
@@ -204,7 +207,7 @@ async fn state_handler(State(app): State<AppState>, headers: HeaderMap) -> impl 
 
     let now = now_secs();
     let last_scan = app.store.last_scan();
-    let shared = app.shared.read().unwrap();
+    let shared = app.shared.read().unwrap_or_else(|p| p.into_inner());
     let mut rows = derive_rows(&app.store, &shared, now);
     // capacity reflects THIS machine's usage + local session counts only
     let (working, waiting, idle) = count_statuses(&rows);
@@ -242,12 +245,17 @@ async fn state_handler(State(app): State<AppState>, headers: HeaderMap) -> impl 
     (StatusCode::OK, axum::Json(resp)).into_response()
 }
 
-/// Prometheus text-format exposition. Unauthenticated by design (the hub binds
-/// localhost only); scrape with a standard Prometheus job.
-async fn metrics_handler(State(app): State<AppState>) -> impl IntoResponse {
+/// Prometheus text-format exposition. Requires the bearer token, same as every
+/// other endpoint — configure the scrape job with `bearer_token` (or an
+/// `Authorization`/`X-VibeMonitor-Token` header) so usage and cost data is not
+/// exposed unauthenticated on non-localhost binds.
+async fn metrics_handler(State(app): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if !check_token(&headers, &app.token) {
+        return (StatusCode::UNAUTHORIZED, String::new()).into_response();
+    }
     let now = now_secs();
     let last_scan = app.store.last_scan();
-    let shared = app.shared.read().unwrap();
+    let shared = app.shared.read().unwrap_or_else(|p| p.into_inner());
     let rows = derive_rows(&app.store, &shared, now);
     let (working, waiting, idle) = count_statuses(&rows);
 
