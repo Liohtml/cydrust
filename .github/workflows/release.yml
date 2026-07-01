@@ -1,21 +1,102 @@
 name: Release
 
+# Builds the vibe-bridge + serial_bridge binaries for Linux/Windows/macOS and
+# publishes them to the GitHub Release for a pushed version tag. The firmware
+# .bin image is attached separately by firmware-release.yml (same tag). This
+# workflow owns the Release object and its notes (taken from the tag annotation).
+
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  # ── Create GitHub Release ─────────────────────────────────────────────────
-  create-release:
-    name: Create GitHub Release
+  # ── Build bridge binaries (both bins per platform) ────────────────────────
+  build:
+    name: Build binaries (${{ matrix.target_label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_label: linux-x86_64
+          - os: windows-latest
+            target_label: windows-x86_64
+          - os: macos-latest
+            target_label: macos-x86_64
+
+    defaults:
+      run:
+        working-directory: bridge
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libudev-dev (Linux — required by serialport)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      # NB: `bridge` is a workspace member, so cargo builds into the
+      # workspace-root `target/` (NOT `bridge/target/`).
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('bridge/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Build vibe-bridge + serial_bridge (release)
+        run: cargo build --release --bin vibe-bridge --bin serial_bridge
+
+      - name: Package archives (Unix)
+        if: runner.os != 'Windows'
+        working-directory: ${{ github.workspace }}
+        run: |
+          tar -czf "vibe-bridge-${{ matrix.target_label }}.tar.gz"  -C target/release vibe-bridge
+          tar -czf "serial-bridge-${{ matrix.target_label }}.tar.gz" -C target/release serial_bridge
+
+      - name: Package archives (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          Compress-Archive -Path target/release/vibe-bridge.exe   -DestinationPath "vibe-bridge-${{ matrix.target_label }}.zip"
+          Compress-Archive -Path target/release/serial_bridge.exe -DestinationPath "serial-bridge-${{ matrix.target_label }}.zip"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-binaries-${{ matrix.target_label }}
+          path: |
+            ${{ github.workspace }}/vibe-bridge-${{ matrix.target_label }}.*
+            ${{ github.workspace }}/serial-bridge-${{ matrix.target_label }}.*
+          retention-days: 7
+
+  # ── Publish the GitHub Release (tag pushes only) ──────────────────────────
+  release:
+    name: Publish GitHub Release
+    needs: build
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      release_id: ${{ steps.create_release.outputs.id }}
+    if: startsWith(github.ref, 'refs/tags/')
 
     steps:
       - name: Checkout repository
@@ -24,189 +105,34 @@ jobs:
           fetch-depth: 0
 
       - name: Extract release notes from tag annotation
-        id: tag_notes
+        id: notes
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
-          # Pull the annotation body if present; fall back to empty string
           NOTES=$(git tag -l --format='%(contents:body)' "$TAG" 2>/dev/null || true)
-          echo "NOTES<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$NOTES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<EOF"
+            echo "$NOTES"
+            echo ""
+            echo "---"
+            echo "**Binaries** are attached below. See the [README](README.md) for"
+            echo "installation instructions and [firmware/RELEASES.md](firmware/RELEASES.md)"
+            echo "for flashing the firmware image."
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2.0.8
         with:
           tag_name: ${{ github.ref_name }}
-          release_name: "CYDRUST ${{ github.ref_name }}"
-          body: |
-            ${{ steps.tag_notes.outputs.NOTES }}
-
-            ---
-            **Binaries** are attached below. See [README](README.md) for installation instructions.
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}  # e.g. v1.0.0-rc.1 → prerelease
-
-  # ── Build bridge (vibe-bridge) ────────────────────────────────────────────
-  build-bridge:
-    name: Build vibe-bridge (${{ matrix.target_label }})
-    runs-on: ${{ matrix.os }}
-    needs: create-release
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target_label: linux-x86_64
-            binary: vibe-bridge
-            archive_ext: .tar.gz
-            archive_cmd: |
-              tar -czf "vibe-bridge-linux-x86_64.tar.gz" -C bridge/target/release vibe-bridge
-
-          - os: windows-latest
-            target_label: windows-x86_64
-            binary: vibe-bridge.exe
-            archive_ext: .zip
-            archive_cmd: |
-              Compress-Archive -Path bridge/target/release/vibe-bridge.exe -DestinationPath vibe-bridge-windows-x86_64.zip
-
-          - os: macos-latest
-            target_label: macos-x86_64
-            binary: vibe-bridge
-            archive_ext: .tar.gz
-            archive_cmd: |
-              tar -czf "vibe-bridge-macos-x86_64.tar.gz" -C bridge/target/release vibe-bridge
-
-    defaults:
-      run:
-        working-directory: bridge
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install libudev-dev (Linux — required by serialport)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
-
-      - name: Cache Cargo registry and build artefacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            bridge/target
-          key: ${{ runner.os }}-cargo-release-bridge-${{ hashFiles('bridge/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-bridge-
-            ${{ runner.os }}-cargo-
-
-      - name: Build vibe-bridge (release)
-        run: cargo build --release --bin vibe-bridge
-
-      - name: Package archive (Linux / macOS)
-        if: runner.os != 'Windows'
-        run: ${{ matrix.archive_cmd }}
-        working-directory: ${{ github.workspace }}
-
-      - name: Package archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ${{ matrix.archive_cmd }}
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload release asset
-        uses: actions/upload-release-asset@v1
+          name: "CYDRUST ${{ github.ref_name }}"
+          body: ${{ steps.notes.outputs.body }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: dist/**
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: vibe-bridge-${{ matrix.target_label }}${{ matrix.archive_ext }}
-          asset_name: vibe-bridge-${{ matrix.target_label }}${{ matrix.archive_ext }}
-          asset_content_type: application/octet-stream
-
-  # ── Build serial_bridge ───────────────────────────────────────────────────
-  build-serial-bridge:
-    name: Build serial_bridge (${{ matrix.target_label }})
-    runs-on: ${{ matrix.os }}
-    needs: create-release
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Windows: COM port support is the primary target
-          - os: windows-latest
-            target_label: windows-x86_64
-            binary: serial_bridge.exe
-            archive_ext: .zip
-            archive_cmd: |
-              Compress-Archive -Path bridge/target/release/serial_bridge.exe -DestinationPath serial-bridge-windows-x86_64.zip
-
-          # Linux: useful for Raspberry Pi / server-side serial adapters
-          - os: ubuntu-latest
-            target_label: linux-x86_64
-            binary: serial_bridge
-            archive_ext: .tar.gz
-            archive_cmd: |
-              tar -czf "serial-bridge-linux-x86_64.tar.gz" -C bridge/target/release serial_bridge
-
-    defaults:
-      run:
-        working-directory: bridge
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install libudev-dev (Linux — required by serialport)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
-
-      - name: Cache Cargo registry and build artefacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            bridge/target
-          key: ${{ runner.os }}-cargo-release-serial-${{ hashFiles('bridge/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-serial-
-            ${{ runner.os }}-cargo-
-
-      - name: Build serial_bridge (release)
-        run: cargo build --release --bin serial_bridge
-
-      - name: Package archive (Linux)
-        if: runner.os != 'Windows'
-        run: ${{ matrix.archive_cmd }}
-        working-directory: ${{ github.workspace }}
-
-      - name: Package archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ${{ matrix.archive_cmd }}
-        working-directory: ${{ github.workspace }}
-
-      - name: Upload release asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: serial-bridge-${{ matrix.target_label }}${{ matrix.archive_ext }}
-          asset_name: serial-bridge-${{ matrix.target_label }}${{ matrix.archive_ext }}
-          asset_content_type: application/octet-stream

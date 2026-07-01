@@ -1,0 +1,41 @@
+name: PR Title
+
+# Validates that pull-request titles follow Conventional Commits. PRs are
+# squash-merged, so the PR title becomes the commit subject that git-cliff
+# parses for the changelog and release notes (see cliff.toml) — a malformed
+# title silently drops the change from the generated notes.
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Validate PR title (Conventional Commits)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in sync with cliff.toml commit parsers.
+          types: |
+            feat
+            fix
+            docs
+            perf
+            refactor
+            chore
+            ci
+            build
+            test
+            style
+            revert
+          requireScope: false

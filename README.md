@@ -7,8 +7,8 @@
   <p><strong>Cyberpunk Development Monitor — Real-time AI coding session tracker for Claude Code on ESP32</strong></p>
 
   <!-- Build & quality -->
-  [![CI Bridge](https://img.shields.io/github/actions/workflow/status/Liohtml/cydrust/ci-bridge.yml?branch=master&label=CI%20Bridge&logo=github&style=flat-square)](https://github.com/Liohtml/cydrust/actions/workflows/ci-bridge.yml)
-  [![Firmware Build](https://img.shields.io/github/actions/workflow/status/Liohtml/cydrust/ci-firmware.yml?branch=master&label=Firmware%20Build&logo=espressif&logoColor=white&style=flat-square)](https://github.com/Liohtml/cydrust/actions/workflows/ci-firmware.yml)
+  [![CI](https://img.shields.io/github/actions/workflow/status/Liohtml/cydrust/ci.yml?branch=master&label=CI&logo=github&style=flat-square)](https://github.com/Liohtml/cydrust/actions/workflows/ci.yml)
+  [![Security](https://img.shields.io/github/actions/workflow/status/Liohtml/cydrust/security.yml?branch=master&label=Security&logo=github&style=flat-square)](https://github.com/Liohtml/cydrust/actions/workflows/security.yml)
   [![Rust](https://img.shields.io/badge/Rust-stable%20%2B%20esp-orange?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org/)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 

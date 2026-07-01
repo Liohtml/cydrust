@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: firmware-release-${{ github.ref }}
+  cancel-in-progress: false
+
 defaults:
   run:
     working-directory: firmware
@@ -80,7 +84,7 @@ jobs:
           # Override the Windows-centric C:\t target-dir from .cargo/config.toml.
           CARGO_TARGET_DIR: /tmp/fw-target
           ESP_IDF_VERSION: v5.3.2
-          ESPFLASH_SKIP_UPDATE_CHECK: "1"
+          ESPFLASH_SKIP_UPDATE_CHECK: "true"
         run: |
           chmod +x package.sh
           ./package.sh default esp32 ./dist
@@ -107,7 +111,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: /tmp/fw-target
           ESP_IDF_VERSION: v5.3.2
-          ESPFLASH_SKIP_UPDATE_CHECK: "1"
+          ESPFLASH_SKIP_UPDATE_CHECK: "true"
           VIBE_SSID:  ${{ secrets.VIBE_SSID }}
           VIBE_PASS:  ${{ secrets.VIBE_PASS }}
           VIBE_HOST:  ${{ secrets.VIBE_HOST }}
@@ -152,6 +156,8 @@ jobs:
             firmware/dist/flash.sh
             firmware/dist/flash.ps1
           fail_on_unmatched_files: true
+          # Append (don't overwrite) — release.yml owns the main release notes.
+          append_body: true
           body: |
             ## Pre-built ESP32 firmware (${{ github.ref_name }})
 

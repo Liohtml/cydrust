@@ -1,0 +1,168 @@
+name: CI
+
+# Single entry point for pull-request and integration CI. A change-detection
+# job scopes the expensive builds (bridge / firmware) to what actually changed,
+# and a final "CI / all-green" gate always runs — so every PR, even a docs-only
+# one, reports one consistent status that branch protection can require without
+# deadlocking on path-filtered checks.
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── Detect which areas changed ────────────────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      bridge: ${{ steps.filter.outputs.bridge }}
+      firmware: ${{ steps.filter.outputs.firmware }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            bridge:
+              - 'bridge/**'
+              - '.github/workflows/ci.yml'
+            firmware:
+              - 'firmware/**'
+              - '.github/workflows/ci.yml'
+
+  # ── Bridge: tests (Linux + Windows) ───────────────────────────────────────
+  bridge-test:
+    name: Bridge · Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.bridge == 'true' || github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install libudev-dev (Linux — required by serialport)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('bridge/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+            ${{ runner.os }}-cargo-
+      - name: Run tests (all features)
+        run: cargo test --all-features
+
+  # ── Bridge: clippy + rustfmt ──────────────────────────────────────────────
+  bridge-lint:
+    name: Bridge · Clippy + fmt
+    needs: changes
+    if: needs.changes.outputs.bridge == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install libudev-dev (Linux — required by serialport)
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ubuntu-latest-cargo-lint-${{ hashFiles('bridge/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-latest-cargo-lint-
+            ubuntu-latest-cargo-
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Run Clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ── Firmware: ESP32 build (non-blocking — slow/flaky toolchain) ───────────
+  firmware-build:
+    name: Firmware · Build (esp32)
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install esp Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ubuntu-latest-cargo-firmware-${{ hashFiles('firmware/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-latest-cargo-firmware-
+            ubuntu-latest-cargo-
+      - name: Build firmware (USB transport — no WiFi feature)
+        env:
+          CARGO_TARGET_DIR: /tmp/fw-target
+          ESP_IDF_VERSION: v5.3.2
+        run: cargo build --release
+      - name: Verify ELF output exists
+        run: |
+          ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
+          if [ -f "$ELF" ]; then ls -lh "$ELF"; else echo "ERROR: ELF not found"; exit 1; fi
+
+  # ── Aggregation gate — always runs, one required status for every PR ──────
+  ci-gate:
+    name: CI / all-green
+    if: always()
+    needs: [changes, bridge-test, bridge-lint, firmware-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs passed
+        run: |
+          echo "bridge-test    = ${{ needs.bridge-test.result }}"
+          echo "bridge-lint    = ${{ needs.bridge-lint.result }}"
+          echo "firmware-build = ${{ needs.firmware-build.result }} (non-blocking)"
+          # A 'skipped' result means the area was untouched — that is a pass.
+          # firmware-build is intentionally excluded from the blocking set.
+          for r in "${{ needs.bridge-test.result }}" "${{ needs.bridge-lint.result }}"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::A required CI job did not pass ($r)."
+              exit 1
+            fi
+          done
+          echo "All required CI jobs passed (skipped = not applicable)."
