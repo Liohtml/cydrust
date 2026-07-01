@@ -6,6 +6,10 @@ on:
     paths:
       - "bridge/Cargo.lock"
       - "firmware/Cargo.lock"
+      - "bridge/Cargo.toml"
+      - "firmware/Cargo.toml"
+      - "bridge/deny.toml"
+      - "firmware/deny.toml"
       - ".github/workflows/security.yml"
   # Weekly on Monday at 02:00 UTC
   schedule:

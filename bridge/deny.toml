@@ -10,6 +10,10 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "Zlib",
+    # webpki-roots ships the Mozilla CA certificate bundle under the Community
+    # Data License Agreement (permissive). Pulled in by the HTTPS client used
+    # for the Anthropic usage probe.
+    "CDLA-Permissive-2.0",
 ]
 
 [advisories]
