@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-01
+
 ### Added
 - **Bridge** — Multi-provider session collectors: Codex (`~/.codex/sessions/`), OpenCode (`opencode.db`), Hermes (`state.db`) — all opened read-only/immutable so they never contend with live processes
 - **Bridge** — `active_turn` field on `Session`: keeps a session "Working" even when the transcript mtime briefly goes stale mid-turn (tail-read heuristic for Claude, event markers for Codex, message role for OpenCode/Hermes)
@@ -62,5 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Firmware** — Color palette: dark bg (#141414), Claude orange (#D97757), Codex purple (#A78BFA)
 - **Firmware** — Display layout: tab bar, header with usage %, session cards (up to 6), footer
 
-[Unreleased]: https://github.com/Liohtml/cydrust/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Liohtml/cydrust/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Liohtml/cydrust/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Liohtml/cydrust/releases/tag/v0.1.0
