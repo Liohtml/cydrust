@@ -506,3 +506,27 @@ async fn get_state_sessions_ordered_waiting_working_idle() {
         "waiting sessions should sort first"
     );
 }
+
+// ── POST /federation/ingest ─────────────────────────────────────────────────────
+
+const FED_BODY: &str = r#"{"node":"test-node","sessions":[]}"#;
+
+#[tokio::test]
+async fn post_federation_ingest_without_token_returns_401() {
+    let (app, _store) = make_app();
+    let resp = app
+        .oneshot(post_json("/federation/ingest", None, FED_BODY))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn post_federation_ingest_with_valid_token_returns_200() {
+    let (app, _store) = make_app();
+    let resp = app
+        .oneshot(post_json("/federation/ingest", Some(TEST_TOKEN), FED_BODY))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

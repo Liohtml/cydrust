@@ -394,3 +394,113 @@ fn compact_json(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn f(v: &Value, k: &str) -> f64 {
+        v[k].as_f64()
+            .unwrap_or_else(|| panic!("key {k} missing or not a number"))
+    }
+
+    // ── extract_ack_id ────────────────────────────────────────────────────
+    #[test]
+    fn extract_ack_id_finds_the_id() {
+        assert_eq!(extract_ack_id(r#"{"ack":"abc123"}"#), Some("abc123"));
+    }
+
+    #[test]
+    fn extract_ack_id_absent_is_none() {
+        assert_eq!(extract_ack_id(r#"{"log":"hello"}"#), None);
+    }
+
+    #[test]
+    fn extract_ack_id_empty_id_is_some_empty() {
+        assert_eq!(extract_ack_id(r#"{"ack":""}"#), Some(""));
+    }
+
+    // ── round3 ────────────────────────────────────────────────────────────
+    #[test]
+    fn round3_keeps_three_decimals() {
+        assert!((round3(0.123456) - 0.123).abs() < 1e-9);
+        assert!((round3(0.123800) - 0.124).abs() < 1e-9);
+        assert!((round3(0.9999) - 1.0).abs() < 1e-9);
+        assert!((round3(0.0) - 0.0).abs() < 1e-9);
+    }
+
+    // ── provider_mini ─────────────────────────────────────────────────────
+    #[test]
+    fn provider_mini_not_ok_collapses_to_ok_false() {
+        // Even with data present, a not-ok provider emits only {"ok":false}.
+        let out = provider_mini(&json!({"ok": false, "pct": 0.5}));
+        assert_eq!(out, json!({"ok": false}));
+    }
+
+    #[test]
+    fn provider_mini_omits_fields_at_sentinel_values() {
+        // weekPct/weekResetSec/leftoverPct = -1, burn = 0, eta = "" → all omitted.
+        let out = provider_mini(&json!({
+            "ok": true,
+            "pct": 0.42049,
+            "resetSec": 3600,
+            "weekPct": -1.0,
+            "weekResetSec": -1,
+            "willExhaustBeforeReset": false,
+            "burnPerHr": 0.0,
+            "leftoverPct": -1.0,
+            "etaClock": ""
+        }));
+        assert_eq!(out["ok"], json!(true));
+        assert!((f(&out, "p") - 0.420).abs() < 1e-9); // rounded to 3 dp
+        assert_eq!(out["r"], json!(3600));
+        for k in ["wp", "wr", "we", "b", "lo", "e"] {
+            assert!(
+                out.get(k).is_none(),
+                "expected {k} to be omitted at sentinel"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_mini_includes_optional_fields_when_present() {
+        let out = provider_mini(&json!({
+            "ok": true,
+            "pct": 0.1,
+            "resetSec": 60,
+            "weekPct": 0.5,
+            "weekResetSec": 100,
+            "willExhaustBeforeReset": true,
+            "burnPerHr": 12.3456,
+            "leftoverPct": 0.25,
+            "etaClock": "14:30"
+        }));
+        assert!((f(&out, "wp") - 0.5).abs() < 1e-9);
+        assert_eq!(out["wr"], json!(100));
+        assert_eq!(out["we"], json!(true));
+        assert!((f(&out, "b") - 12.346).abs() < 1e-9); // 12.3456 → 12.346
+        assert!((f(&out, "lo") - 0.25).abs() < 1e-9);
+        assert_eq!(out["e"], json!("14:30"));
+    }
+
+    // ── compact_json ──────────────────────────────────────────────────────
+    #[test]
+    fn compact_json_strips_outside_strings() {
+        assert_eq!(
+            compact_json("{ \"a\" : 1 , \"b\" : 2 }"),
+            r#"{"a":1,"b":2}"#
+        );
+    }
+
+    #[test]
+    fn compact_json_preserves_whitespace_inside_strings() {
+        assert_eq!(compact_json(r#"{"m":"x  y"}"#), r#"{"m":"x  y"}"#);
+    }
+
+    #[test]
+    fn compact_json_preserves_escaped_quotes() {
+        let input = r#"{ "m" : "he said \"hi\"" }"#;
+        assert_eq!(compact_json(input), r#"{"m":"he said \"hi\""}"#);
+    }
+}
