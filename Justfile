@@ -90,6 +90,14 @@ bump-version version:
     sed -i 's/^version = ".*"/version = "{{version}}"/' firmware/Cargo.toml
     @echo "Version bumped to {{version}} - don't forget to update CHANGELOG.md"
 
+# === WSL2 ===
+
+# WSL2 bring-up: attach CYD, check perms, start bridge + serial_bridge
+wsl-up:
+    bash scripts/wsl-cyd-up.sh
+
+# === Cleanup ===
+
 # Clean all build artifacts
 clean:
     cd bridge && cargo clean
