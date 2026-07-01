@@ -39,7 +39,7 @@ cd "$SCRIPT_DIR"
 VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.+)".*/\1/')"
 
 if ! cargo espflash --version >/dev/null 2>&1; then
-  echo "ERROR: cargo-espflash not found. Install it with: cargo install espflash" >&2
+  echo "ERROR: cargo-espflash not found. Install it with: cargo install cargo-espflash" >&2
   exit 1
 fi
 echo "Using $(cargo espflash --version)"

@@ -15,6 +15,12 @@ allow = [
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "workspace"
+ignore = [
+    # thiserror 1.0.69 `Error::downcast_mut()` unsoundness. Pulled in
+    # transitively (v1 is semver-locked by upstream deps); the app does not
+    # rely on the affected code path. Revisit when deps move to thiserror 2.x.
+    "RUSTSEC-2026-0190",
+]
 
 [bans]
 multiple-versions = "warn"

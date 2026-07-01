@@ -53,9 +53,12 @@ jobs:
           path: ~/.cargo/bin/cargo-espflash
           key: ${{ runner.os }}-cargo-espflash-v4
 
-      - name: Install espflash
+      - name: Install cargo-espflash
         if: steps.cache-espflash.outputs.cache-hit != 'true'
-        run: cargo install espflash --locked
+        # package.sh calls `cargo espflash save-image`, which is provided by the
+        # cargo-espflash crate (the `cargo espflash` subcommand) — NOT the
+        # standalone `espflash` binary.
+        run: cargo install cargo-espflash --locked
 
       # ── Cargo registry / git cache ────────────────────────────────────────
       - name: Cache Cargo registry

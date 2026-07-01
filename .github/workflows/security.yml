@@ -49,14 +49,19 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: stable
         run: |
+          # RUSTSEC-2026-0190: thiserror 1.0.69 downcast_mut unsoundness — pulled
+          # in transitively (v1 is semver-locked by upstream deps) in both
+          # workspaces; not on an exercised code path. See deny.toml.
           if [ "${{ matrix.workspace }}" = "firmware" ]; then
             # atomic-polyfill (RUSTSEC-2023-0089) and proc-macro-error2 (RUSTSEC-2026-0173)
             # are unmaintained but locked to the ESP-IDF toolchain ecosystem; we cannot update them.
             cargo audit --deny warnings \
               --ignore RUSTSEC-2023-0089 \
-              --ignore RUSTSEC-2026-0173
+              --ignore RUSTSEC-2026-0173 \
+              --ignore RUSTSEC-2026-0190
           else
-            cargo audit --deny warnings
+            cargo audit --deny warnings \
+              --ignore RUSTSEC-2026-0190
           fi
 
   # ── cargo-deny (licenses + advisories + duplicates) ───────────────────────

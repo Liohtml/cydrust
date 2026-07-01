@@ -92,6 +92,10 @@ jobs:
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install libudev-dev (Linux — required by serialport)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
       - name: Cache Cargo registry and build artefacts
         uses: actions/cache@v4
         with:
@@ -165,6 +169,10 @@ jobs:
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libudev-dev (Linux — required by serialport)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
 
       - name: Cache Cargo registry and build artefacts
         uses: actions/cache@v4
