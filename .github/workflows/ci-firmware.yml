@@ -35,27 +35,17 @@ jobs:
         with:
           submodules: recursive
 
-      # ── Rust + espup ──────────────────────────────────────────────────────
-      - name: Install Rust stable (host toolchain for espup itself)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache espup + Xtensa toolchain
-        uses: actions/cache@v4
-        id: cache-esp-toolchain
+      # ── esp Rust toolchain (Xtensa) ───────────────────────────────────────
+      # Use the xtensa-toolchain action (same as firmware-release.yml). The
+      # previous `cargo install espup` approach failed because it ran inside
+      # firmware/, whose rust-toolchain.toml pins channel = "esp" — a toolchain
+      # that isn't installed yet (chicken-and-egg).
+      - name: Install esp Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.5
         with:
-          path: |
-            ~/.rustup/toolchains/esp
-            ~/.rustup/toolchains/xtensa*
-            ~/export-esp.sh
-          key: esp-toolchain-${{ runner.os }}-espup-latest
-          restore-keys: |
-            esp-toolchain-${{ runner.os }}-
-
-      - name: Install espup and ESP toolchain
-        if: steps.cache-esp-toolchain.outputs.cache-hit != 'true'
-        run: |
-          cargo install espup --locked
-          espup install --targets esp32 --export-file ~/export-esp.sh
+          default: true
+          buildtargets: esp32
+          ldproxy: true
 
       # ── Cargo cache ───────────────────────────────────────────────────────
       - name: Cache Cargo registry and build artefacts
@@ -78,9 +68,7 @@ jobs:
           # Override the Windows-centric target-dir from .cargo/config.toml
           CARGO_TARGET_DIR: /tmp/fw-target
           ESP_IDF_VERSION: v5.3.2
-        run: |
-          source ~/export-esp.sh
-          cargo build --release
+        run: cargo build --release
 
       - name: Verify ELF output exists
         shell: bash
