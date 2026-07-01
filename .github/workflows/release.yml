@@ -108,7 +108,11 @@ jobs:
         id: notes
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          NOTES=$(git tag -l --format='%(contents:body)' "$TAG" 2>/dev/null || true)
+          # actions/checkout does not reliably preserve the *annotated* tag
+          # object, so a bare `git tag --format='%(contents:body)'` can fall
+          # back to the commit message. Re-fetch the tag object explicitly.
+          git fetch --force --no-tags origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+          NOTES=$(git for-each-ref "refs/tags/${TAG}" --format='%(contents:body)' 2>/dev/null || true)
           {
             echo "body<<EOF"
             echo "$NOTES"
