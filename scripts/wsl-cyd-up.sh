@@ -1,83 +1,93 @@
-#!/bin/bash
-# WSL2 CYD bring-up helper: attach USB device, verify permissions, start bridge + serial_bridge
+#!/usr/bin/env bash
+# wsl-cyd-up.sh — Bring the CYDRUST hub up under WSL2.
+#
+# Under WSL2 a Windows COM port is NOT visible to Linux. The bridge must run
+# inside WSL (it scans ~/.claude/projects), so the CYD's USB-serial device has
+# to be forwarded into WSL via usbipd-win. This script does that *only when the
+# CYD is plugged in*, then starts the bridge + serial_bridge so the firmware's
+# "hub offline" banner clears.
+#
+# Target device: USB-SERIAL CH340 on the CYD board.
+set -euo pipefail
 
-set -e
+# --- Device identity (the "only when this device is connected" guard) ---
+HWID="1a86:7523"          # CH340 on the CYD (VID 1a86 / PID 7523)
+SERIAL_DEV="/dev/ttyUSB0"
+BRIDGE_PORT="5151"
 
-CYD_VENDOR_ID="1a86"   # CH340 USB-SERIAL
-CYD_PRODUCT_ID="7523"
-CYD_HARDWARE_ID="${CYD_VENDOR_ID}:${CYD_PRODUCT_ID}"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_DIR"
 
-echo "🔌 CYD WSL2 Bring-Up Helper"
-echo "   Attaching USB device ($CYD_HARDWARE_ID), checking permissions, starting bridge..."
-echo
+log() { printf '\033[36m[cyd]\033[0m %s\n' "$*"; }
+err() { printf '\033[31m[cyd]\033[0m %s\n' "$*" >&2; }
 
-# ─── Check usbipd is installed ───
-if ! command -v usbipd.exe &> /dev/null; then
-    echo "❌ usbipd.exe not found. Install from:"
-    echo "   https://github.com/dorssel/usbipd-win/releases"
+# --- 0. usbipd-win present on the Windows side? ---
+if ! command -v usbipd.exe >/dev/null 2>&1; then
+  err "usbipd-win not found. Install once from an admin PowerShell:"
+  err "    winget install usbipd"
+  exit 1
+fi
+
+# --- 1. Is the CYD connected right now? ---
+# NB: 'usbipd list' does NOT accept --hardware-id; filter its output ourselves.
+LIST="$(usbipd.exe list 2>/dev/null || true)"
+if ! grep -qi "$HWID" <<<"$LIST"; then
+  log "CYD (CH340 $HWID) is not connected — nothing to do."
+  exit 0
+fi
+log "CYD found: $HWID"
+
+# --- 2. Bind (persistent share) if needed — requires admin once ---
+if grep -i "$HWID" <<<"$LIST" | grep -qi "Not shared"; then
+  log "Device not shared yet — attempting bind ..."
+  if ! usbipd.exe bind --hardware-id "$HWID" 2>/dev/null; then
+    err "bind failed (needs admin). Run once in an admin PowerShell:"
+    err "    usbipd bind --hardware-id $HWID"
     exit 1
+  fi
 fi
 
-# ─── Check device is present ───
-echo "📋 Checking if CYD ($CYD_HARDWARE_ID) is present on Windows..."
-if ! usbipd.exe list --hardware-id $CYD_HARDWARE_ID &> /dev/null; then
-    echo "⚠️  CYD not detected. Plug it in or check the hardware ID."
-    exit 1
+# --- 3. Attach into WSL (idempotent; harmless if already attached) ---
+if [[ ! -e "$SERIAL_DEV" ]]; then
+  log "Attaching USB device to WSL ..."
+  usbipd.exe attach --wsl --hardware-id "$HWID" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    [[ -e "$SERIAL_DEV" ]] && break
+    sleep 0.5
+  done
 fi
-echo "✓ CYD found"
-echo
-
-# ─── Attach the device ───
-echo "🔗 Attaching USB device to WSL..."
-usbipd.exe attach --wsl --hardware-id $CYD_HARDWARE_ID &> /dev/null || {
-    echo "⚠️  Device may already be attached. Continuing..."
-}
-
-# ─── Wait for device node and check permissions ───
-echo "⏳ Waiting for /dev/ttyUSB0..."
-timeout=15
-while [ $timeout -gt 0 ]; do
-    if [ -e /dev/ttyUSB0 ]; then
-        break
-    fi
-    sleep 1
-    timeout=$((timeout - 1))
-done
-
-if [ ! -e /dev/ttyUSB0 ]; then
-    echo "❌ Timeout waiting for /dev/ttyUSB0. Check dmesg."
-    exit 1
+if [[ ! -e "$SERIAL_DEV" ]]; then
+  err "$SERIAL_DEV did not appear. Check:  usbipd.exe list   and   dmesg | tail"
+  exit 1
 fi
-echo "✓ /dev/ttyUSB0 found"
+log "Serial device available: $SERIAL_DEV"
 
-# ─── Check read/write permission ───
-if [ ! -r /dev/ttyUSB0 ] || [ ! -w /dev/ttyUSB0 ]; then
-    echo "❌ Permission denied on /dev/ttyUSB0"
-    echo "   Fix with: sudo usermod -aG dialout \$USER"
-    echo "   Then: log out and back in (or: wsl --shutdown)"
-    exit 1
+# --- 3b. Read/write permission on the device? (root:dialout by default) ---
+if [[ ! -r "$SERIAL_DEV" || ! -w "$SERIAL_DEV" ]]; then
+  err "No access to $SERIAL_DEV (owned by $(stat -c '%U:%G' "$SERIAL_DEV"))."
+  if ! id -nG | grep -qw dialout; then
+    err "You are not in the 'dialout' group. Fix permanently, then restart WSL:"
+    err "    sudo usermod -aG dialout \$USER   # then: wsl --shutdown"
+  fi
+  err "For this session only:  sudo chmod 666 $SERIAL_DEV"
+  exit 1
 fi
-echo "✓ /dev/ttyUSB0 readable and writable"
-echo
 
-# ─── Start the bridge ───
-echo "🌉 Starting vibe-bridge..."
-if pgrep -f "cargo run.*vibe-bridge" &> /dev/null; then
-    echo "   (already running)"
-else
-    # Try to verify the bridge is actually listening
-    cd bridge || exit 1
-    timeout 10 bash -c 'until curl -s http://localhost:5151/state -H "X-VibeMonitor-Token: dummy" 2>/dev/null | grep -q "ts"; do sleep 0.5; done' &> /dev/null || {
-        echo "⚠️  Bridge may not have started. Starting it now..."
-        cargo run --release --bin vibe-bridge -- config.toml &
-        sleep 2
-    }
-    cd - > /dev/null
+# --- 4. Bridge server listening on :5151? else start it ---
+if ! ss -tlnp 2>/dev/null | grep -q ":$BRIDGE_PORT "; then
+  log "Starting bridge on :$BRIDGE_PORT ..."
+  ( cd bridge && cargo run --release --bin vibe-bridge -- config.toml ) >/tmp/cyd-bridge.log 2>&1 &
+  for _ in $(seq 1 60); do
+    ss -tlnp 2>/dev/null | grep -q ":$BRIDGE_PORT " && break
+    sleep 0.5
+  done
 fi
-echo "✓ Bridge is running (or was already running)"
-echo
+if ! ss -tlnp 2>/dev/null | grep -q ":$BRIDGE_PORT "; then
+  err "bridge did not come up on :$BRIDGE_PORT. Log: tail -30 /tmp/cyd-bridge.log"
+  exit 1
+fi
+log "bridge is up (:$BRIDGE_PORT)"
 
-# ─── Start serial_bridge ───
-echo "🔌 Starting serial_bridge..."
-cd bridge || exit 1
-exec cargo run --release --bin serial_bridge -- --port /dev/ttyUSB0 --config config.toml
+# --- 5. serial_bridge: poll bridge -> push compact JSON to the CYD ---
+log "Starting serial_bridge on $SERIAL_DEV (Ctrl-C to stop) ..."
+exec cargo run --release --bin serial_bridge -- --port "$SERIAL_DEV" --config bridge/config.toml

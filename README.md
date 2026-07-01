@@ -283,22 +283,24 @@ just wsl-up
 ```
 
 This one command:
-1. Attaches the CYD to WSL (via `usbipd attach`).
-2. Waits for `/dev/ttyUSB0` to appear.
-3. Verifies you're in the `dialout` group (permission to access USB serial).
-4. Starts `vibe-bridge` if not already running.
-5. Execs `serial_bridge` to stream data from the CYD.
+1. Checks the CYD (`1a86:7523`) is actually connected — exits quietly if not.
+2. Binds it to usbipd if it isn't shared yet (needs admin once; prints how).
+3. Attaches the CYD to WSL (via `usbipd attach`) and waits for `/dev/ttyUSB0`.
+4. Verifies read/write permission on the device (`dialout` group).
+5. Starts `vibe-bridge` if it isn't already listening on `:5151`.
+6. Execs `serial_bridge` to stream data from the CYD.
 
 ### What happens on replug?
 
-The CYD will auto-reconnect:
-1. Windows detects the unplug → usbipd loses the device.
-2. CYD is plugged back in → usbipd re-attaches (auto-attach is the default).
-3. `/dev/ttyUSB0` reappears in WSL.
-4. `serial_bridge` (running in the background) detects the new device and reconnects automatically.
-5. The firmware shows the session list within ~5 seconds.
+`usbipd attach` is **one-shot** by default — it does *not* re-attach automatically when the device is unplugged and plugged back in. After a replug:
 
-**Note:** If `usbipd attach` isn't persistent across reboots, you can keep it running in a supervisor (systemd user service or `while` loop).
+1. Windows re-detects the CYD, but WSL's `/dev/ttyUSB0` does **not** reappear on its own.
+2. Re-run `just wsl-up` (it re-attaches and `serial_bridge` reconnects), **or**
+3. Start a persistent attach that survives replug: `usbipd.exe attach --wsl --auto-attach --hardware-id 1a86:7523` (this stays running in the foreground and re-attaches on each replug).
+
+Once `/dev/ttyUSB0` is back, `serial_bridge` reconnects automatically and the firmware shows the session list within ~5 seconds.
+
+**Note:** usbipd bindings do not persist across a Windows reboot's usbipd service restart in all versions — re-run `just wsl-up` after a reboot, or use `--auto-attach` under a supervisor for unattended setups.
 
 ### Troubleshooting
 
