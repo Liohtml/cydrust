@@ -37,7 +37,7 @@ const HOOK_EVENTS: &[&str] = &["Notification", "Stop"];
 const VIBE_MARKER: &str = "vibe_hook";
 
 fn home_settings_path() -> Option<PathBuf> {
-    dirs_next::home_dir().map(|h| h.join(".claude").join("settings.json"))
+    dirs::home_dir().map(|h| h.join(".claude").join("settings.json"))
 }
 
 /// Locate the sibling vibe_hook executable next to this install_hooks binary.

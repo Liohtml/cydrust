@@ -27,7 +27,7 @@ fn now_secs() -> f64 {
 }
 
 fn codex_sessions_root() -> PathBuf {
-    dirs_next::home_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".codex")
         .join("sessions")

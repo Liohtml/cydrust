@@ -30,7 +30,7 @@ fn now_secs() -> f64 {
 }
 
 fn claude_projects_root() -> PathBuf {
-    dirs_next::home_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude")
         .join("projects")

@@ -35,7 +35,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2"
-dirs-next = "2"
+dirs = "6"
 # shell escaping for safe command generation
 shlex = "1"
 # constant-time token comparison (timing-oracle resistance)

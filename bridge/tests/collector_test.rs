@@ -106,7 +106,7 @@ fn manual_scan_populates_store_correctly() {
 
 /// Build a fake `~/.claude/projects` tree inside a TempDir and call a
 /// local reimplementation of the scan logic (we cannot redirect
-/// `dirs_next::home_dir()`, so we reproduce the scan_claude walk here to test
+/// `dirs::home_dir()`, so we reproduce the scan_claude walk here to test
 /// the observable outcome on the store).
 fn scan_dir(root: &std::path::Path, store: &Arc<Store>) {
     use walkdir::WalkDir;
