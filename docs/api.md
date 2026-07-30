@@ -92,19 +92,24 @@ X-VibeMonitor-Token: your-secret-here
   ],
   "usage": {
     "claude": {
-      "ok": false,
-      "pct": null,
-      "resetSec": null
+      "ok": true,
+      "pct": 0.42,
+      "resetSec": 7200,
+      "weekPct": 0.18,
+      "weekResetSec": 432000,
+      "willExhaustBeforeReset": false,
+      "burnPerHr": 0.031,
+      "leftoverPct": 0.58,
+      "etaClock": "14:30"
     },
-    "codex": {
-      "ok": false,
-      "pct": null,
-      "resetSec": null
-    }
+    "codex": { "ok": false }
   },
+  "capacity": { "verdict": "go" },
   "staleSec": 1
 }
 ```
+
+When a provider is inactive, only its `"ok": false` field is present.
 
 **Response 401**
 
@@ -118,10 +123,17 @@ X-VibeMonitor-Token: your-secret-here
 |---|---|---|
 | `ts` | `i64` | Unix timestamp (seconds) when this response was generated. |
 | `sessions` | `SessionRow[]` | Active sessions, sorted by status priority. |
-| `usage.claude.ok` | `bool` | `true` when Claude usage data is available (reserved for future use). |
-| `usage.claude.pct` | `f64 \| null` | Claude token usage as a 0–1 fraction. |
-| `usage.claude.resetSec` | `u64 \| null` | Seconds until Claude usage resets. |
+| `usage.claude.ok` | `bool` | `true` when Claude usage data is available. |
+| `usage.claude.pct` | `f64 \| null` | Fraction of the current period limit consumed (0–1). |
+| `usage.claude.resetSec` | `u64 \| null` | Seconds until the usage counter resets. |
+| `usage.claude.weekPct` | `f64` | Fraction of the weekly limit consumed (`-1` = unknown). |
+| `usage.claude.weekResetSec` | `i64` | Seconds until the weekly reset (`-1` = unknown). |
+| `usage.claude.willExhaustBeforeReset` | `bool` | `true` if the current burn rate exhausts the limit before reset. |
+| `usage.claude.burnPerHr` | `f64` | Usage fraction consumed per hour (`0` = unknown). |
+| `usage.claude.leftoverPct` | `f64` | Fraction remaining (`-1` = unknown). |
+| `usage.claude.etaClock` | `string` | Wall-clock time of the reset, e.g. `"14:30"` (`""` = unknown). |
 | `usage.codex.*` | same | Same fields for Codex. |
+| `capacity` | `object` | Capacity verdict — `go` / `pace` / `throttle` — advising whether it is safe to start another agent. |
 | `staleSec` | `i64` | Seconds since the collector last completed a scan. `-1` if never run. |
 
 **Field reference — `SessionRow`**
@@ -182,8 +194,10 @@ Empty body. The session's `waiting` flag and `waitingSec` are now cleared.
 Receives Claude Code hook events. This endpoint is designed to be registered as a Claude
 Code hook handler (see [Claude Code hooks documentation](https://docs.anthropic.com/en/docs/claude-code/hooks)).
 
-When the bridge receives a `Notification` or `Stop` event, it sets the corresponding
-session to `waiting = true`, which lights up the amber indicator on the display.
+When the bridge receives a `Notification` event, it sets the corresponding session to
+`waiting = true`, which lights up the amber indicator on the display. A `Stop` event
+clears the waiting flag again (the turn has ended). `install_hooks` registers exactly
+these two events — `Notification` and `Stop`; other hook events are not forwarded.
 
 **Request**
 
@@ -215,12 +229,12 @@ The endpoint accepts two equivalent field naming conventions (Claude Code versio
 | `event` | `string` | Event type (alternative naming) |
 | `hook_event_name` | `string` | Event type (`"Notification"`, `"Stop"`, etc.) |
 
-**Events that trigger `waiting`:**
+**Event semantics:**
 
 | Event | Effect |
 |---|---|
 | `Notification` | Marks session waiting (Claude needs attention) |
-| `Stop` | Marks session waiting (Claude stopped, may need review) |
+| `Stop` | Clears the waiting flag (the turn has ended) |
 | Any other event | Accepted and silently ignored (returns 200) |
 
 **Response 200**
@@ -233,7 +247,19 @@ Empty body.
 {"error": "unauthorized"}
 ```
 
-**Claude Code hook registration** (in `~/.claude/settings.json` or a project
+**Claude Code hook registration — automatic (recommended):** use the `install_hooks`
+binary to merge the hook config into `~/.claude/settings.json` idempotently:
+
+```sh
+cd bridge
+cargo run --bin install_hooks -- --url http://localhost:5151 --token your-secret-here
+```
+
+It registers the `Notification` and `Stop` events, wired to the lightweight `vibe_hook`
+binary (spawned per event by Claude Code; always exits 0, 1500 ms timeout). Re-run any
+time; it replaces the VIBE_MARKER block and leaves any other hooks untouched.
+
+**Manual registration** (in `~/.claude/settings.json` or a project
 `.claude/settings.json`):
 
 ```json
@@ -264,6 +290,83 @@ Empty body.
   }
 }
 ```
+
+---
+
+### `GET /metrics`
+
+Prometheus text exposition. Requires the bearer token (same `X-VibeMonitor-Token`
+header as the other endpoints), so usage and cost data is not exposed unauthenticated
+when the hub binds a non-localhost address. Configure your Prometheus scrape job with
+`bearer_token`/`authorization`, or a custom `X-VibeMonitor-Token` header.
+
+**Request**
+
+```http
+GET /metrics HTTP/1.1
+Host: 127.0.0.1:5151
+X-VibeMonitor-Token: your-secret-here
+```
+
+**Response 200** — `Content-Type: text/plain; version=0.0.4`
+
+```
+# HELP vibe_sessions_total Number of live sessions by status
+# TYPE vibe_sessions_total gauge
+vibe_sessions_total{status="working"} 2
+vibe_sessions_total{status="waiting"} 1
+vibe_sessions_total{status="idle"} 3
+# HELP vibe_model_tokens_total Token count per model today
+# TYPE vibe_model_tokens_total gauge
+vibe_model_tokens_total{model="claude-opus-4-5",provider="claude"} 142000
+...
+```
+
+Covers session counts, per-model token/cost gauges, and provider totals.
+
+---
+
+### `POST /federation/ingest`
+
+Accepts a session payload from a node bridge and merges it into the aggregator's
+`RemoteStore` with a 30 s TTL. Remote sessions are keyed by `node/session-id`; the
+aggregator's `GET /state` merges local and remote rows transparently.
+
+**Request**
+
+```http
+POST /federation/ingest HTTP/1.1
+Host: 127.0.0.1:5151
+X-VibeMonitor-Token: your-secret-here
+Content-Type: application/json
+
+{
+  "node_id": "dev-rig-1",
+  "ts": 1750000000,
+  "sessions": [
+    { "id": "abc123", "tool": "claude", "project": "cydrust",
+      "status": "working", "age_sec": 12, "waiting": false }
+  ]
+}
+```
+
+**Response 200**
+
+Empty body.
+
+**Federation configuration** — add a `[federation]` section to `bridge/config.toml` to
+enable multi-host mode:
+
+```toml
+[federation]
+role     = "node"                        # "node" | "aggregator" | "none" (default)
+upstream = "http://192.168.1.100:5151"  # aggregator URL (node role only)
+node_id  = "dev-rig-1"                  # prefix for remote session IDs
+```
+
+- **`node`** — pushes local session rows to `upstream` every 2 s via `POST /federation/ingest`
+- **`aggregator`** — accepts ingest payloads from nodes; merges them into `/state` with 30 s TTL
+- Omit the section (or set `role = "none"`) for standalone operation
 
 ---
 

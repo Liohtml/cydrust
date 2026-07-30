@@ -64,6 +64,31 @@ over the local network, removing the need for the serial bridge entirely.
              └───────────────┘
 ```
 
+---
+
+## Component Summary
+
+| Component | Crate / binary | Role |
+|-----------|---------------|------|
+| `bridge/src/collector.rs` | `walkdir`, `dirs-next` | Scans `~/.claude/projects` every 2 s |
+| `bridge/src/collector_codex.rs` | `serde_json` | Reads Codex session DB; extracts usage + sessions |
+| `bridge/src/collector_opencode.rs` | `rusqlite` | Reads OpenCode SQLite DB (bundled driver) |
+| `bridge/src/collector_hermes.rs` | `rusqlite` | Reads Hermes SQLite DB |
+| `bridge/src/state.rs` | stdlib `RwLock` | In-memory session store (upsert / ack / snapshot / reap) |
+| `bridge/src/hub.rs` | `axum 0.8` | REST endpoints `/state`, `/ack`, `/hook`, `/metrics`, `/federation/ingest` |
+| `bridge/src/federation.rs` | `ureq` | `RemoteStore` TTL cache; push (node→aggregator) and ingest (aggregator endpoint) |
+| `bridge/src/metrics.rs` | stdlib | Prometheus text exposition for sessions, usage, and per-model cost |
+| `bridge/src/bin/install_hooks.rs` | `serde_json` | Idempotent Claude Code hook installer (merges into `settings.json`) |
+| `bridge/src/bin/vibe_hook.rs` | `ureq` | Lightweight per-event hook process spawned by Claude Code; always exits 0 |
+| `bridge/src/bin/serial_bridge.rs` | `serialport`, `ureq` | USB transport proxy, emits compact short-key JSON |
+| `firmware/src/main.rs` | `esp-idf-hal`, `mipidsi`, `embedded-graphics` | Display driver, JSON parser, settings (NVS), render loop |
+| `firmware/src/icons.rs` | `embedded-graphics` | All four provider 18×18 logos with alpha compositing |
+| `firmware/src/ota.rs` | `esp-idf-svc` | OTA update via `esp_https_ota`; aborts to old slot on failure |
+| `firmware/src/eink.rs` | `epd-waveshare` | E-paper display driver for Waveshare 2.9" B/W (SSD1680/IL3820) |
+| `firmware/src/ble.rs` | `esp32-nimble` | BLE GATT server — code-complete, toolchain-blocked |
+
+---
+
 **Key structural note:** `firmware/` is intentionally excluded from the Cargo workspace
 (`Cargo.toml` workspace `members = ["bridge"]`). The firmware targets
 `xtensa-esp32-espidf` via the `esp` toolchain channel and must be built independently
@@ -132,13 +157,13 @@ The `serial_bridge` binary is not used in this mode.
               ┌─────────────────────┼──────────────────────┐
               │                     │                       │
               │ age < 60 s          │ age >= 60 s           │ POST /hook
-              ▼                     ▼                       │ event = Notification|Stop
+              ▼                     ▼                       │ event = Notification
          ┌─────────┐          ┌──────────┐                  ▼
          │ Working │          │   Idle   │           ┌─────────────┐
          └─────────┘          └──────────┘           │   Waiting   │
                                                      └──────┬──────┘
-                                                            │ POST /ack
-                                                            │ (firmware or client)
+                                                            │ POST /ack (firmware or
+                                                            │ client) or Stop hook event
                                                             ▼
                                                      ┌─────────────┐
                                                      │  (cleared)  │
@@ -157,7 +182,7 @@ The `serial_bridge` binary is not used in this mode.
 |----------------|----------|------------------------------------------------|
 | `WORKING_SEC`  | 60.0 s   | `.jsonl` mtime < 60 s ago → `working`          |
 | `GONE_TTL`     | 14 400 s | `.jsonl` not seen for > 4 h → filtered out     |
-| Waiting        | explicit | set by `POST /hook` (Notification or Stop event)|
+| Waiting        | explicit | set by `POST /hook` (Notification event); cleared by a Stop event or `POST /ack` |
 
 ---
 
@@ -170,7 +195,7 @@ The `serial_bridge` binary is not used in this mode.
 | Credentials in FW   | None baked in                          | `VIBE_SSID`, `VIBE_PASS`, `VIBE_HOST`, `VIBE_PORT`, `VIBE_TOKEN` |
 | Serial port         | COM* / /dev/tty* at 115 200 baud       | Not used                               |
 | Data format         | Newline-JSON mini payload ~80 bytes    | Full `/state` JSON response (8 KB buf) |
-| ACK flow            | Firmware → serial → serial_bridge → `/ack` | Not yet implemented in WiFi mode   |
+| ACK flow            | Firmware → serial → serial_bridge → `/ack` | Firmware → `POST /ack` directly over HTTP |
 | Offline detection   | `last_rx.elapsed() > 6 s`              | 3 consecutive fetch failures           |
 | DTR/RTS reset guard | serial_bridge lowers both signals      | Not applicable                         |
 | Network dependency  | None (pure USB CDC)                    | Local WiFi / same subnet              |

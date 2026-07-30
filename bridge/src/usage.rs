@@ -80,11 +80,7 @@ fn read_claude_oauth_token() -> Option<String> {
 }
 
 fn credentials_path() -> Option<PathBuf> {
-    Some(
-        dirs_next::home_dir()?
-            .join(".claude")
-            .join(".credentials.json"),
-    )
+    Some(dirs::home_dir()?.join(".claude").join(".credentials.json"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -273,7 +269,7 @@ pub fn codex_usage() -> UsageInfo {
 }
 
 fn codex_sessions_root() -> Option<PathBuf> {
-    Some(dirs_next::home_dir()?.join(".codex").join("sessions"))
+    Some(dirs::home_dir()?.join(".codex").join("sessions"))
 }
 
 /// Seconds until a rate-limit window resets. Codex logs `resets_at` (epoch);

@@ -80,7 +80,7 @@ fn hermes_data_root() -> PathBuf {
             }
         }
     }
-    dirs_next::home_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".local")
         .join("share")

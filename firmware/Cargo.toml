@@ -55,8 +55,6 @@ embedded-svc = "0.28"
 mipidsi = "0.8"
 display-interface-spi = "0.5"
 embedded-hal = "1"
-serde = { version = "1", features = ["derive"] }
-serde-json-core = "0.5"
 heapless = "0.8"
 log = "0.4"
 anyhow = { version = "1", features = ["std"] }

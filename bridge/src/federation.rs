@@ -193,31 +193,75 @@ pub fn push(payload: &FedPayload, upstream: &str, token: &str) -> anyhow::Result
 ///
 /// Reads `COMPUTERNAME` (Windows) or `HOSTNAME` (unix), falling back to the
 /// `hostname` command, then to `"unknown-host"`. Never panics.
+///
+/// The result is sanitized: node ids namespace sessions as `"<node>/<id>"`,
+/// so a `/` in the hostname would corrupt the dedupe key, and an unbounded
+/// value would bloat every federation payload.
 pub fn hostname() -> String {
     if let Ok(h) = std::env::var("COMPUTERNAME") {
         if !h.trim().is_empty() {
-            return h.trim().to_string();
+            return sanitize_node_id(h.trim());
         }
     }
     if let Ok(h) = std::env::var("HOSTNAME") {
         if !h.trim().is_empty() {
-            return h.trim().to_string();
+            return sanitize_node_id(h.trim());
         }
     }
     if let Ok(out) = std::process::Command::new("hostname").output() {
         if out.status.success() {
             let h = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !h.is_empty() {
-                return h;
+                return sanitize_node_id(&h);
             }
         }
     }
     "unknown-host".to_string()
 }
 
+/// Restrict a node id to `[A-Za-z0-9._-]` (everything else becomes `-`) and
+/// cap it at 63 bytes. Falls back to `"unknown-host"` if nothing survives.
+fn sanitize_node_id(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    s.truncate(63);
+    if s.trim_matches('-').is_empty() {
+        "unknown-host".to_string()
+    } else {
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_node_id_replaces_separator_and_specials() {
+        // '/' would corrupt the "<node>/<id>" dedupe key
+        assert_eq!(sanitize_node_id("host/evil"), "host-evil");
+        assert_eq!(sanitize_node_id("my box (2)"), "my-box--2-");
+        assert_eq!(sanitize_node_id("ok-host_1.local"), "ok-host_1.local");
+    }
+
+    #[test]
+    fn sanitize_node_id_caps_length_at_63() {
+        let long = "a".repeat(200);
+        assert_eq!(sanitize_node_id(&long).len(), 63);
+    }
+
+    #[test]
+    fn sanitize_node_id_falls_back_when_nothing_survives() {
+        assert_eq!(sanitize_node_id("///"), "unknown-host");
+    }
 
     fn row(id: &str, project: &str, status: Status) -> SessionRow {
         let waiting = matches!(status, Status::Waiting);

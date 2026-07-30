@@ -7,27 +7,56 @@ This document covers everything needed to build, run, test, and modify CYDRUST l
 ## Repository Layout
 
 ```
-CYDRUST/
-├── Cargo.toml               Workspace root (members: ["bridge"])
-├── bridge/
-│   ├── Cargo.toml           vibe-bridge crate (axum server + serial_bridge binary)
-│   ├── config.toml          Local config — git-ignored (token, host, port)
-│   ├── config.example.toml  Template — tracked in git
+cydrust/
+├── Cargo.toml                      Workspace root (members: ["bridge"])
+├── bridge/                         # Host-side Rust/Axum server
+│   ├── Cargo.toml                  # vibe-bridge crate (axum, tokio, walkdir, ureq, rusqlite…)
+│   ├── config.toml                 # Runtime config: token, host, port, [federation]
+│   ├── config.example.toml         # Template — tracked in git
+│   ├── deny.toml                   # cargo-deny license + advisory policy
 │   └── src/
-│       ├── main.rs          Entry point — reads config, spawns collector, starts axum
-│       ├── collector.rs     Walks ~/.claude/projects/**/*.jsonl, upserts sessions
-│       ├── hub.rs           Axum route handlers (GET /state, POST /ack, POST /hook)
-│       ├── model.rs         Data types — Session, SessionRow, Status, StateResponse
-│       ├── state.rs         RwLock<HashMap> store with upsert / ack / mark_waiting
+│       ├── main.rs                 # Entry point — config, background threads, HTTP server
+│       ├── collector.rs            # Walks ~/.claude/projects/**/*.jsonl every 2 s
+│       ├── collector_codex.rs      # Reads Codex session DB for usage + sessions
+│       ├── collector_opencode.rs   # Reads OpenCode SQLite DB via bundled rusqlite
+│       ├── collector_hermes.rs     # Reads Hermes SQLite DB
+│       ├── state.rs                # RwLock<HashMap> session store (upsert / ack / snapshot / reap)
+│       ├── hub.rs                  # Axum router: /state, /ack, /hook, /metrics, /federation/ingest
+│       ├── federation.rs           # RemoteStore TTL cache + push loop (node→aggregator)
+│       ├── metrics.rs              # Prometheus text exposition (sessions + usage + cost)
+│       ├── model.rs                # Shared types: Session, SessionRow, StateResponse, Metrics…
+│       ├── usage.rs                # Usage polling (Anthropic API + Codex)
 │       └── bin/
-│           └── serial_bridge.rs  Polls /state, writes mini-JSON to serial port
-└── firmware/
-    ├── Cargo.toml           vibe-firmware crate (ESP32 / Xtensa)
-    ├── rust-toolchain.toml  channel = "esp"
-    ├── .cargo/config.toml   target = xtensa-esp32-espidf, ESP_IDF_VERSION = v5.3.2
-    ├── build.rs             embuild integration (ESP-IDF cmake)
-    └── src/
-        └── main.rs          Display driver, JSON parser, WiFi/USB transport logic
+│           ├── serial_bridge.rs    # USB transport binary: polls /state → COM port
+│           ├── install_hooks.rs    # Idempotent Claude Code hook installer (settings.json)
+│           └── vibe_hook.rs        # Per-event hook process spawned by Claude Code
+│
+├── firmware/                       # ESP32 embedded Rust
+│   ├── Cargo.toml                  # vibe-firmware crate; features: wifi, ota, eink, ble
+│   ├── build.rs                    # embuild sysenv output (ESP-IDF integration)
+│   ├── rust-toolchain.toml         # channel = "esp"
+│   ├── .cargo/config.toml          # target = xtensa-esp32-espidf, ESP_IDF_VERSION = v5.3.2
+│   ├── partitions_ota.csv          # Dual OTA partition table (2×1664 KiB, 4 MB flash)
+│   ├── sdkconfig.defaults          # Base ESP-IDF sdkconfig
+│   ├── sdkconfig.defaults.ota      # OTA-specific sdkconfig overrides
+│   ├── sdkconfig.defaults.ble      # BLE-specific sdkconfig overrides
+│   ├── package.sh / package.ps1    # Merges bootloader + table + app into flashable .bin
+│   ├── RELEASES.md                 # Pre-built release instructions
+│   ├── deny.toml                   # cargo-deny policy for firmware workspace
+│   └── src/
+│       ├── main.rs                 # SPI init, render(), parse_state(), settings (NVS), transport loops
+│       ├── icons.rs                # All four provider 18×18 logos (r5,g6,b5,alpha pixel arrays)
+│       ├── ota.rs                  # OTA update via esp_https_ota (wifi,ota feature)
+│       ├── eink.rs                 # E-paper display driver — Waveshare 2.9" B/W (eink feature)
+│       └── ble.rs                  # BLE GATT server — NimBLE, newline-JSON frames (ble feature)
+│
+└── docs/
+    ├── api.md / architecture.md / development.md / hardware.md
+    ├── troubleshooting.md          # Cross-cutting troubleshooting guide
+    ├── wsl2.md                     # WSL2 + usbipd setup for Windows hosts
+    └── assets/
+        ├── banner.png              # Header banner
+        └── banner.html             # Banner source
 ```
 
 > **Workspace note:** `firmware/` is excluded from the Cargo workspace because it
@@ -46,21 +75,33 @@ CYDRUST/
 | Rust stable | `rustup install stable` | Rust 1.75 or later |
 | cargo (bundled with Rust) | — | — |
 
-No additional system libraries are required on Windows. On Linux, install
-`libudev-dev` for the `serialport` crate:
+No additional system libraries are required on Windows. On a fresh Linux or WSL2
+install, add the build essentials plus `libudev-dev` for the `serialport` crate:
 
 ```sh
 # Debian / Ubuntu
-sudo apt install libudev-dev
+sudo apt install -y build-essential pkg-config libudev-dev
 ```
+
+Additionally, add your user to the `dialout` group so `serial_bridge` can access USB
+serial ports without `sudo`:
+
+```sh
+sudo usermod -aG dialout $USER
+# Log out and back in (or: wsl --shutdown; restart WSL)
+```
+
+If you skip this step, `serial_bridge` will fail with `Permission denied` when opening
+`/dev/ttyUSB0`.
 
 ### Firmware (ESP32)
 
 | Tool | Install command | Notes |
 |---|---|---|
 | espup | `cargo install espup && espup install` | Installs the Xtensa Rust fork + GCC toolchain |
+| ldproxy | `cargo install ldproxy` | Linker proxy required by the `esp` toolchain |
 | espflash | `cargo install espflash` | Flashing and serial monitor |
-| ESP-IDF v5.3.2 | Installed automatically by `embuild` on first build | Requires Python 3.8+ |
+| ESP-IDF v5.3.2 | Installed automatically by `embuild` on first build | Requires Python 3.8+ and pip |
 
 After `espup install`, load the environment:
 
@@ -289,13 +330,33 @@ On first build, `embuild` downloads and compiles ESP-IDF automatically. This tak
 
 ### Feature flags
 
-| Feature | Cargo flag | Description |
-|---|---|---|
-| `usb` (default) | `cargo +esp build --release` | USB CDC transport via `serial_bridge` |
-| `wifi` | `cargo +esp build --release --features wifi` | Direct HTTP to bridge over WiFi |
+| Feature flag | Default | Effect |
+|-------------|---------|--------|
+| *(none)* | yes | USB serial transport via UART0 (`serial_bridge` on the host) |
+| `wifi` | no | Direct HTTP to bridge over WiFi; requires `VIBE_*` env vars |
+| `wifi,ota` | no | WiFi + OTA updates via `esp_https_ota`; uses `partitions_ota.csv` |
+| `eink` | no | E-paper display (Waveshare 2.9" B/W); USB-transport only — **mutually exclusive with `wifi`** |
+| `ble` | no | BLE GATT server; code-complete but toolchain-blocked (see the README's BLE note) |
 
-The features are mutually exclusive via `#[cfg(feature = "wifi")]` / `#[cfg(not(feature = "wifi"))]`
-guards throughout `src/main.rs`.
+```sh
+cargo +esp build --release                    # USB (default)
+cargo +esp build --release --features wifi    # WiFi
+cargo +esp build --release --features wifi,ota# WiFi + OTA
+cargo +esp build --release --features eink    # E-ink (USB transport, separate SPI bus)
+```
+
+USB and WiFi transports are mutually exclusive via `#[cfg(feature = "wifi")]` /
+`#[cfg(not(feature = "wifi"))]` guards throughout `src/main.rs`.
+
+### Tunable constants (source-level)
+
+| Constant | Location | Default | Description |
+|----------|----------|---------|-------------|
+| `WORKING_SEC` | `bridge/src/hub.rs` | `60.0` s | Age threshold below which a session is *Working* |
+| `GONE_TTL` | `bridge/src/hub.rs` | `14400.0` s | Sessions older than 4 hours are pruned from `/state` |
+| `POLL_MS` | `firmware/src/main.rs` | `2000` ms | WiFi poll interval |
+| `POLL_SECS` | `bridge/src/bin/serial_bridge.rs` | `2` s | Serial bridge push interval |
+| `BAUD` | `bridge/src/bin/serial_bridge.rs` | `115200` | UART baud rate |
 
 ### Environment variables (firmware — WiFi mode only)
 
@@ -326,17 +387,50 @@ the firmware binary. They are not read at runtime.
 
 ---
 
-## Adding a New Tool (e.g. Codex)
+## Changing the Colour Palette
 
-The collector currently hard-codes `tool: "claude".into()` for every session it finds.
-To track a second tool:
+Colours are returned by small inline functions in `firmware/src/main.rs` so the
+dark/light theme can switch them at runtime. The dark-theme defaults are:
 
-1. Add a second `scan_*()` function in `bridge/src/collector.rs` that walks the new
-   tool's project directory and calls `Store::upsert()` with `tool: "codex".into()`.
-2. Spawn that function in the collector loop in `bridge/src/main.rs`.
-3. In `firmware/src/main.rs`, the `tool` field already flows through `make_mini()` and
-   `parse_state()`. The card render checks `row.tool.as_str() == "codex"` to pick the
-   purple `C_CODEX` accent. No firmware changes needed for display.
+```rust
+fn c_bg()     -> Rgb565 { Rgb565::new(2,  5,  2)  }  // #141414 dark background
+fn c_claude() -> Rgb565 { Rgb565::new(26, 29, 11) }  // #D97757 Claude orange
+fn c_codex()  -> Rgb565 { Rgb565::new(20, 34, 30) }  // #A78BFA Codex purple
+fn c_work()   -> Rgb565 { Rgb565::new(9,  55, 16) }  // #4ADE80 working green
+fn c_wait()   -> Rgb565 { Rgb565::new(30, 41,  4) }  // #F5A623 waiting amber
+fn c_offline()-> Rgb565 { Rgb565::new(28, 18,  9) }  // #E5484D offline red
+
+// Provider accent colours used in detail overlay headers
+const BRAND_OPENCODE: Rgb565 = Rgb565::new(2, 46, 20);  // teal-green
+const BRAND_HERMES:   Rgb565 = Rgb565::new(7, 32, 30);  // blue
+```
+
+`Rgb565::new(r, g, b)` takes 5-bit R, 6-bit G, 5-bit B values. Use an online RGB565
+converter to map hex colours. To add a light theme, check `Settings.dark` inside each
+function and return an alternate value.
+
+---
+
+## Adding Support for Other AI Tools
+
+The firmware currently renders native icons for four providers via `draw_badge()` in
+`firmware/src/main.rs`:
+
+| `tool` string | Icon | Accent colour |
+|--------------|------|--------------|
+| `"claude"` (default) | Claude pixel logo | Orange `#D97757` |
+| `"codex"` | Codex pixel logo | Purple `#A78BFA` |
+| `"opencode"` | OpenCode terminal logo | Teal-green |
+| `"hermes"` | Hermes gradient logo | Blue |
+
+To add a fifth provider:
+
+1. Add a collector in `bridge/src/collector.rs` that scans the relevant session
+   directory and sets the `tool` field
+2. Add an 18×18 px RGBA pixel array to `firmware/src/icons.rs` (use a 2-bit alpha:
+   `0` = transparent, `255` = opaque)
+3. Extend `draw_badge()` and `provider_meta()` in `firmware/src/main.rs` to dispatch to
+   the new icon and return the correct name + accent colour
 
 ---
 

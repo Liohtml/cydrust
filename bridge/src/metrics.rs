@@ -27,7 +27,7 @@ use walkdir::WalkDir;
 // ─── paths ───────────────────────────────────────────────────────────────────
 
 fn home() -> PathBuf {
-    dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("."))
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn claude_projects_root() -> PathBuf {
