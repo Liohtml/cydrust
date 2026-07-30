@@ -18,7 +18,6 @@ use esp_idf_hal::{
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver},
 };
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
-use heapless::String as HString;
 use log::info;
 use mipidsi::{
     models::ST7789,
@@ -29,7 +28,10 @@ use std::time::Instant;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "wifi")]
-use embedded_svc::{http::client::Client as HttpClient, http::Method, io::Read as EmbeddedRead};
+use embedded_svc::{
+    http::client::Client as HttpClient, http::Method,
+    io::{Read as EmbeddedRead, Write as EmbeddedWrite},
+};
 #[cfg(feature = "wifi")]
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -42,6 +44,9 @@ use esp_idf_svc::{
 use std::sync::{Arc, Mutex};
 
 mod icons;
+// Pure protocol/formatting logic (no esp-idf deps) — shared with the host test
+// suite via `#[path]` (see bridge/tests/firmware_proto_test.rs).
+mod proto;
 #[cfg(all(feature = "wifi", feature = "ota"))]
 mod ota;
 #[cfg(all(feature = "ble", not(feature = "wifi")))]
@@ -66,76 +71,14 @@ enum Tab { Sessions, Usage, Metrics, Settings }
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum View { List, Detail { index: usize } }
 
-#[derive(Debug, Clone, PartialEq)]
-enum SessionStatus { Working, Idle, Waiting }
-
-#[derive(Debug, Clone, PartialEq)]
-struct SessionRow {
-    project:  HString<32>,
-    status:   SessionStatus,
-    tool:     HString<8>,
-    id:       HString<16>,   // "i" — session id (truncated)
-    age_sec:  i32,           // "a" — age in seconds, -1 unknown
-    wait_sec: i32,           // "ws" — waiting seconds, -1 if not waiting
-    summary:  HString<80>,   // "s" — short summary (waiting sessions), "" none
-}
-
-// Per-provider usage. Mirrors the original VibeMonitor `Usage` model.
-// pct/week_pct are 0..1 fractions; sentinels: week_pct/leftover_pct = -1.0,
-// week_reset_sec = -1, burn_per_hr = 0.0, eta_clock = "" mean "unknown".
-#[derive(Debug, Clone, PartialEq)]
-struct Usage {
-    ok:             bool,
-    pct:            f32,
-    reset_sec:      u32,
-    week_pct:       f32,
-    week_reset_sec: i32,
-    will_exhaust:   bool,
-    burn_per_hr:    f32,
-    leftover_pct:   f32,
-    eta_clock:      HString<12>,
-}
-
-impl Default for Usage {
-    fn default() -> Self {
-        Usage {
-            ok: false, pct: 0.0, reset_sec: 0, week_pct: -1.0,
-            week_reset_sec: -1, will_exhaust: false, burn_per_hr: 0.0,
-            leftover_pct: -1.0, eta_clock: HString::new(),
-        }
-    }
-}
-
-// One model's token/cost usage today (Metrics tab shows the top models,
-// so Opus/Sonnet/Haipku etc. each get their own row instead of collapsing
-// to a single per-provider label).
-#[derive(Debug, Default, Clone, PartialEq)]
-struct ModelRow {
-    provider: HString<10>,   // "claude" / "codex" / "opencode" / "hermes" (for the badge)
-    model:    HString<16>,
-    tokens:   f32,           // f32 ok for "M/k" display
-    usd:      f32,
-    has_usd:  bool,
-}
-
-#[derive(Debug, Default, Clone, PartialEq)]
-struct Metrics {
-    models:         heapless::Vec<ModelRow, 6>,   // top models by tokens (desc)
-    total_tokens:   f32,
-    total_usd:      f32,
-    has_usd:        bool,
-    usd_complete:   bool,
-    total_sessions: i32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq)]
-struct DisplayState {
-    sessions: heapless::Vec<SessionRow, 8>,
-    claude:   Usage,
-    codex:    Usage,
-    metrics:  Metrics,
-    offline:  bool,
-}
+// Data model, `/state` parsing and pure display-formatting helpers live in
+// `proto` (no esp-idf deps — see that module's doc comment) so the host test
+// suite can exercise the parser without an ESP32 toolchain. `SessionRow` /
+// `Usage` / `ModelRow` / `Metrics` / `DisplayState` all come from there.
+use proto::{
+    fmt_long, fmt_reset, fmt_tokens, fmt_usd, humanize_age, humanize_dur, parse_state,
+    wrap_lines, DisplayState, Metrics, SessionRow, SessionStatus, Usage,
+};
 
 // User settings (persisted in NVS).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -156,173 +99,9 @@ fn snap_sleep(m: u16) -> u16 {
 }
 
 // ── JSON parsing ─────────────────────────────────────────────────────────────
-
-fn parse_state(text: &str) -> Option<DisplayState> {
-    let mut ds = DisplayState::default();
-    if let Some(start) = text.find("\"sessions\":[") {
-        let rest = &text[start + 12..];
-        let mut depth = 1i32;
-        let mut obj_start = None;
-        for (i, c) in rest.char_indices() {
-            match c {
-                '{' => { if depth == 1 { obj_start = Some(i); } depth += 1; }
-                '}' => {
-                    depth -= 1;
-                    if depth == 1 {
-                        if let Some(s) = obj_start {
-                            let obj = &rest[s..=i];
-                            let project  = extract_str(obj, "project").unwrap_or("?");
-                            let status_s = extract_str(obj, "status").unwrap_or("idle");
-                            let tool_s   = extract_str(obj, "tool").unwrap_or("claude");
-                            let status = match status_s {
-                                "waiting" => SessionStatus::Waiting,
-                                "working" => SessionStatus::Working,
-                                _         => SessionStatus::Idle,
-                            };
-                            let mut p: HString<32> = HString::new();
-                            let _ = p.push_str(trunc_bytes(project, 32));
-                            let mut t: HString<8> = HString::new();
-                            let _ = t.push_str(trunc_bytes(tool_s, 8));
-                            let mut idh: HString<16> = HString::new();
-                            if let Some(idv) = extract_str(obj, "i") {
-                                let _ = idh.push_str(trunc_bytes(idv, 16));
-                            }
-                            let mut sh: HString<80> = HString::new();
-                            if let Some(sv) = extract_str(obj, "s") {
-                                let _ = sh.push_str(trunc_bytes(sv, 80));
-                            }
-                            let age  = num_field(obj, "a").map(|v| v as i32).unwrap_or(-1);
-                            let wsec = num_field(obj, "ws").map(|v| v as i32).unwrap_or(-1);
-                            let _ = ds.sessions.push(SessionRow {
-                                project: p, status, tool: t,
-                                id: idh, age_sec: age, wait_sec: wsec, summary: sh,
-                            });
-                        }
-                        obj_start = None;
-                    }
-                    if depth == 0 { break; }
-                }
-                ']' => { if depth == 1 { break; } }
-                _ => {}
-            }
-        }
-    }
-    ds.claude  = parse_provider(text, "\"claude\":{");
-    ds.codex   = parse_provider(text, "\"codex\":{");
-    ds.metrics = parse_metrics(text);
-    Some(ds)
-}
-
-fn parse_metrics(text: &str) -> Metrics {
-    let mut m = Metrics::default();
-    let marker = "\"metrics\":{";
-    let Some(pos) = text.find(marker) else { return m; };
-    let rest = &text[pos + marker.len()..];   // after the opening '{'
-    let mut depth = 1i32;
-    let mut ci = rest.len();
-    for (i, c) in rest.char_indices() {
-        match c { '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { ci = i; break; } }, _ => {} }
-    }
-    let mobj = &rest[..ci];
-
-    // models array  "m":[ {"p","n","t","u"}, .. ]  (sorted by tokens desc by the bridge)
-    if let Some(apos) = mobj.find("\"m\":[") {
-        let arr = &mobj[apos + 5..];
-        let mut d2 = 0i32;
-        let mut start = None;
-        for (i, c) in arr.char_indices() {
-            match c {
-                '{' => { if d2 == 0 { start = Some(i); } d2 += 1; }
-                '}' => {
-                    d2 -= 1;
-                    if d2 == 0 {
-                        if let Some(s) = start {
-                            let o = &arr[s..=i];
-                            let mut mr = ModelRow::default();
-                            if let Some(p)  = extract_str(o, "p") { let _ = mr.provider.push_str(trunc_bytes(p, 10)); }
-                            if let Some(n)  = extract_str(o, "n") { let _ = mr.model.push_str(trunc_bytes(n, 16)); }
-                            if let Some(t)  = num_field(o, "t") { mr.tokens = t; }
-                            if let Some(u)  = num_field(o, "u") { mr.usd = u; mr.has_usd = true; }
-                            let _ = m.models.push(mr);
-                        }
-                        start = None;
-                    }
-                }
-                ']' => { if d2 == 0 { break; } }
-                _ => {}
-            }
-        }
-    }
-    if let Some(v) = num_field(mobj, "tt") { m.total_tokens = v; }
-    if let Some(v) = num_field(mobj, "tu") { m.total_usd = v; m.has_usd = true; }
-    if let Some(v) = num_field(mobj, "ts") { m.total_sessions = v as i32; }
-    if mobj.contains("\"uc\":true") { m.usd_complete = true; }
-    m
-}
-
-// Scan a numeric field within a provider object slice. Uses a boundary-prefixed
-// needle ({"k": or ,"k":) so short keys never match as a suffix of a longer key
-// (e.g. "p" inside "wp", "lo" inside ... ).
-fn num_field(obj: &str, bare_key: &str) -> Option<f32> {
-    for pre in ['{', ','] {
-        let needle = format!("{}\"{}\":", pre, bare_key);
-        if let Some(p) = obj.find(&needle) {
-            let rest = &obj[p + needle.len()..];
-            let end  = rest.find(|c: char| c == ',' || c == '}').unwrap_or(rest.len());
-            if let Ok(v) = rest[..end].trim().parse::<f32>() { return Some(v); }
-        }
-    }
-    None
-}
-
-fn parse_provider(text: &str, marker: &str) -> Usage {
-    let mut u = Usage::default();
-    let Some(pos) = text.find(marker) else { return u; };
-    // object slice from just after the marker's '{' to its matching '}'
-    let rest = &text[pos + marker.len()..];
-    let mut depth = 1i32;
-    let mut endi = rest.len();
-    for (i, c) in rest.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => { depth -= 1; if depth == 0 { endi = i; break; } }
-            _ => {}
-        }
-    }
-    let obj = &rest[..endi];
-
-    u.ok = obj.contains("\"ok\":true");
-    if !u.ok { return u; }
-
-    if let Some(v) = num_field(obj, "p")  { u.pct = v; }
-    if let Some(v) = num_field(obj, "r")  { u.reset_sec = v.max(0.0) as u32; }
-    if let Some(v) = num_field(obj, "wp") { u.week_pct = v; }
-    if let Some(v) = num_field(obj, "wr") { u.week_reset_sec = v as i32; }
-    if obj.contains("\"we\":true") { u.will_exhaust = true; }
-    if let Some(v) = num_field(obj, "b")  { u.burn_per_hr = v; }
-    if let Some(v) = num_field(obj, "lo") { u.leftover_pct = v; }
-    if let Some(e) = extract_str(obj, "e") {
-        let _ = u.eta_clock.push_str(trunc_bytes(e, 12));
-    }
-    u
-}
-
-fn extract_str<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
-    let search = format!("\"{}\":\"", key);
-    let start  = obj.find(&search)? + search.len();
-    let end    = obj[start..].find('"')? + start;
-    Some(&obj[start..end])
-}
-
-// Truncate to at most `max_bytes`, never splitting a multi-byte UTF-8 char.
-// (Plain `&s[..n]` panics on a non-char-boundary — real risk with model names
-// / summaries that contain em-dashes, accents, CJK, etc.)
-fn trunc_bytes(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes { return s; }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
-    &s[..end]
-}
+//
+// The `/state` mini-JSON scanner (`parse_state`) lives in `proto` — see that
+// module's doc comment for why (host-testable, no esp-idf deps).
 
 // ── WiFi fetch ───────────────────────────────────────────────────────────────
 
@@ -497,14 +276,6 @@ fn render<D: DrawTarget<Color = Rgb565>>(
     }
 }
 
-// "152.7M" / "84k" / "512"
-fn fmt_tokens(t: f32) -> String {
-    if t >= 1_000_000.0 { format!("{:.1}M", t / 1_000_000.0) }
-    else if t >= 1_000.0 { format!("{:.0}k", t / 1_000.0) }
-    else { format!("{:.0}", t) }
-}
-fn fmt_usd(u: f32) -> String { format!("${:.2}", u) }
-
 fn render_metrics<D: DrawTarget<Color = Rgb565>>(display: &mut D, m: &Metrics) {
     fill(display, 0, 26, 320, 213, c_bg());   // body clear (metrics update slowly)
 
@@ -549,7 +320,8 @@ fn render_metrics<D: DrawTarget<Color = Rgb565>>(display: &mut D, m: &Metrics) {
         if !m.usd_complete { s.push('*'); }
         s
     } else { String::new() };
-    let ts = format!("{} tok  {} sess  {}", fmt_tokens(m.total_tokens), m.total_sessions, tu);
+    let more = if m.dropped_models > 0 { format!("  +{} more", m.dropped_models) } else { String::new() };
+    let ts = format!("{} tok  {} sess  {}{}", fmt_tokens(m.total_tokens), m.total_sessions, tu, more);
     txt(display, &FONT_7X13, &ts, 8, 231, Alignment::Left, c_fg());
 }
 
@@ -558,42 +330,16 @@ fn pct_str(u: &Usage, name: &str) -> String {
     else    { format!("{} --", name) }
 }
 
-// Humanize seconds since last activity → "now / 12s ago / 5m ago / 3h ago".
-fn humanize_age(sec: i32) -> String {
-    if sec < 0 { return String::new(); }
-    let s = sec as u32;
-    if s < 5 { "now".to_string() }
-    else if s < 60 { format!("{}s ago", s) }
-    else if s < 3600 { format!("{}m ago", s / 60) }
-    else if s < 86400 { format!("{}h ago", s / 3600) }
-    else { format!("{}d ago", s / 86400) }
-}
-
-// Bare duration → "45s / 5m / 3h".
-fn humanize_dur(sec: i32) -> String {
-    if sec < 0 { return String::new(); }
-    let s = sec as u32;
-    if s < 60 { format!("{}s", s) }
-    else if s < 3600 { format!("{}m", s / 60) }
-    else { format!("{}h", s / 3600) }
-}
-
-// Greedy word-wrap into up to `max` slices of <= `cols` chars.
-fn wrap_lines(s: &str, cols: usize, max: usize) -> heapless::Vec<&str, 4> {
-    let mut out: heapless::Vec<&str, 4> = heapless::Vec::new();
-    let mut start = 0usize;
-    while start < s.len() && out.len() < max {
-        let mut end = (start + cols).min(s.len());
-        while end < s.len() && !s.is_char_boundary(end) { end -= 1; }   // char-safe
-        if end < s.len() {
-            if let Some(sp) = s[start..end].rfind(' ') { if sp > 0 { end = start + sp; } }
-        }
-        let _ = out.push(s[start..end].trim_end());
-        let rest = &s[end..];
-        let skip = rest.len() - rest.trim_start_matches(' ').len();      // ASCII spaces
-        start = end + skip;
-    }
-    out
+// How many of the 6 on-screen slots hold an actual session card, plus how
+// many sessions are hidden (drawn on screen but past the 6-card limit, or
+// dropped by the parser past `proto::MAX_SESSIONS`). When anything is
+// hidden the last slot is reserved for a "+N more" line instead of a card —
+// `render_sessions` and `sessions_touch` both call this so the drawn layout
+// and the touch hit-testing never disagree about which slots are cards.
+fn session_overflow(ds: &DisplayState) -> (usize, usize) {
+    let hidden = ds.sessions.len().saturating_sub(6) + ds.dropped_sessions;
+    let card_cap = if hidden > 0 { 5 } else { 6 };
+    (card_cap, hidden)
 }
 
 fn render_sessions<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayState) {
@@ -606,8 +352,14 @@ fn render_sessions<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayS
     txt(display, &FONT_7X13, &codex_h,  316, 40, Alignment::Right, c_codex());
     fill(display, 0, 45, 320, 1, c_panel());
 
-    // Session cards — 6 fixed slots; draw a card or clear the empty slot.
-    let n = if ds.offline { 0 } else { ds.sessions.len().min(6) };
+    // Session cards — 6 fixed slots. Sessions can overflow in two ways: more
+    // than 6 fit on screen (only `n` are drawn as cards) or more than
+    // `proto::MAX_SESSIONS` arrived in the payload and were never stored
+    // (`ds.dropped_sessions`, counted instead of silently dropped by the
+    // parser). Rather than hide either, the last slot becomes a "+N more"
+    // summary line whenever anything is hidden.
+    let (card_cap, hidden) = if ds.offline { (6, 0) } else { session_overflow(ds) };
+    let n = if ds.offline { 0 } else { ds.sessions.len().min(card_cap) };
     if !ds.offline && ds.sessions.is_empty() {
         fill(display, 0, 46, 320, 168, c_bg());
         txt(display, &FONT_9X15, "no sessions", 160, 130, Alignment::Center, c_dim());
@@ -633,6 +385,10 @@ fn render_sessions<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayS
                     txt(display, &FONT_6X10, &sm, 28, y + 22, Alignment::Left, c_dim());
                 }
                 txt(display, &FONT_9X15_BOLD, sym, 312, y + 16, Alignment::Right, sc);
+            } else if i == card_cap && hidden > 0 {
+                rfill(display, 2, y, 316, 25, 4, c_panel());
+                let more = format!("+{} more", hidden);
+                txt(display, &FONT_7X13_BOLD, &more, 160, y + 16, Alignment::Center, c_dim());
             } else {
                 fill(display, 2, y, 316, 25, c_bg());            // erase removed card
             }
@@ -647,8 +403,7 @@ fn render_sessions<D: DrawTarget<Color = Rgb565>>(display: &mut D, ds: &DisplayS
     } else {
         let working = ds.sessions.iter().filter(|s| s.status == SessionStatus::Working).count();
         let waiting = ds.sessions.iter().filter(|s| s.status == SessionStatus::Waiting).count();
-        let more    = if ds.sessions.len() > 6 { "   +more" } else { "" };
-        let footer  = format!("{} working   {} waiting{}", working, waiting, more);
+        let footer  = format!("{} working   {} waiting", working, waiting);
         txt(display, &FONT_7X13, &footer, 4, 234, Alignment::Left, c_dim());
     }
 }
@@ -709,23 +464,6 @@ fn render_detail<D: DrawTarget<Color = Rgb565>>(display: &mut D, row: &SessionRo
     } else {
         txt(display, &FONT_7X13, "tap anywhere to go back", 160, 227, Alignment::Center, c_dim());
     }
-}
-
-// resetSec -> "Xh Ym" (>=60min) or "Ym". Mirrors ui.cpp::fmt_reset.
-fn fmt_reset(reset_sec: u32) -> String {
-    let mins = reset_sec / 60;
-    if mins >= 60 { format!("{}h {}m", mins / 60, mins % 60) } else { format!("{}m", mins) }
-}
-
-// sec -> "Xd Yh" (>=24h) / "Xh Ym" (>=1h) / "Ym"; negative -> "--".
-// Mirrors ui.cpp::fmt_long.
-fn fmt_long(sec: i32) -> String {
-    if sec < 0 { return "--".to_string(); }
-    let mins = (sec as u32) / 60;
-    let hrs  = mins / 60;
-    if hrs >= 24 { format!("{}d {}h", hrs / 24, hrs % 24) }
-    else if hrs >= 1 { format!("{}h {}m", hrs, mins % 60) }
-    else { format!("{}m", mins) }
 }
 
 // Projection line text + color. Mirrors ui.cpp::projection_text decision tree.
@@ -971,13 +709,48 @@ fn settings_save(nvs: &mut EspNvs<NvsDefault>, s: &Settings) {
 }
 
 // Acknowledge a waiting session. USB: emit a clean `{"ack":"<id>"}` line that the
-// serial bridge forwards to POST /ack. (WiFi build: TODO direct POST.)
+// serial bridge forwards to POST /ack. WiFi: POST /ack directly against the
+// bridge (same host/port/token as `fetch_state`).
 #[cfg(not(feature = "wifi"))]
 fn send_ack(id: &str) {
     if !id.is_empty() { println!("{{\"ack\":\"{}\"}}", id); }
 }
 #[cfg(feature = "wifi")]
-fn send_ack(_id: &str) { /* TODO: HTTP POST /ack in the WiFi build */ }
+fn send_ack(id: &str) {
+    if id.is_empty() { return; }
+    let url  = format!("http://{}:{}/ack", BRIDGE_HOST, BRIDGE_PORT);
+    let body = format!("{{\"id\":\"{}\"}}", id);
+    let cfg  = HttpConfig { buffer_size: Some(1024), buffer_size_tx: Some(1024), ..Default::default() };
+    let conn = match EspHttpConnection::new(&cfg) {
+        Ok(c) => c,
+        Err(e) => { log::warn!("ack: connection failed: {e:?}"); return; }
+    };
+    let mut client = HttpClient::wrap(conn);
+    let content_len = body.len().to_string();
+    let headers = [
+        ("X-VibeMonitor-Token", BRIDGE_TOKEN),
+        ("Content-Type", "application/json"),
+        ("Content-Length", content_len.as_str()),
+    ];
+    let mut req = match client.post(&url, &headers) {
+        Ok(r) => r,
+        Err(e) => { log::warn!("ack: request init failed: {e:?}"); return; }
+    };
+    if let Err(e) = EmbeddedWrite::write_all(&mut req, body.as_bytes()) {
+        log::warn!("ack: write failed: {e:?}");
+        return;
+    }
+    if let Err(e) = req.flush() {
+        log::warn!("ack: flush failed: {e:?}");
+        return;
+    }
+    match req.submit() {
+        Ok(resp) => {
+            if resp.status() != 200 { log::warn!("ack: hub returned status {}", resp.status()); }
+        }
+        Err(e) => log::warn!("ack: submit failed: {e:?}"),
+    }
+}
 
 // Route a Sessions-tab body touch (sy>=34) to a view change / ack.
 // Returns the (possibly new) view.
@@ -987,7 +760,10 @@ fn sessions_touch(sx: i32, sy: i32, view: View, ds: &DisplayState) -> View {
             if (46..=214).contains(&sy) && !ds.offline {
                 let i = ((sy - 47) / 27) as usize;
                 let within = (sy - 47) - (i as i32) * 27 <= 25;
-                if within && i < ds.sessions.len().min(6) {
+                let (card_cap, _hidden) = session_overflow(ds);
+                // `i < card_cap` excludes the reserved "+N more" slot, which
+                // holds no session (see `render_sessions` / `session_overflow`).
+                if within && i < card_cap && i < ds.sessions.len() {
                     return View::Detail { index: i };
                 }
             }
