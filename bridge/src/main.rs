@@ -202,13 +202,17 @@ async fn main() -> Result<()> {
             let shared = shared.clone();
             let token = cfg.token.clone();
             thread::spawn(move || loop {
-                let rows = {
-                    let sh = shared.read().unwrap_or_else(|p| p.into_inner());
-                    hub::derive_rows_pub(&store, &sh, now_secs())
-                };
-                let payload = federation::from_session_rows(&rows, &node_id);
-                if let Err(e) = federation::push(&payload, &upstream, &token) {
-                    tracing::warn!("federation push failed: {e}");
+                if let Err(e) = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let rows = {
+                        let sh = shared.read().unwrap_or_else(|p| p.into_inner());
+                        hub::derive_rows_pub(&store, &sh, now_secs())
+                    };
+                    let payload = federation::from_session_rows(&rows, &node_id);
+                    if let Err(e) = federation::push(&payload, &upstream, &token) {
+                        tracing::warn!("federation push failed: {e}");
+                    }
+                })) {
+                    tracing::error!("Panic in federation push loop: {:?}", e);
                 }
                 thread::sleep(Duration::from_secs(2));
             });

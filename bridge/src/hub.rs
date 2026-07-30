@@ -5,9 +5,10 @@ use crate::{
     usage,
 };
 use axum::{
-    extract::{Json, State},
+    extract::{Json, Request, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -21,6 +22,10 @@ use subtle::ConstantTimeEq;
 
 const WORKING_SEC: f64 = 60.0;
 const GONE_TTL: f64 = 14400.0;
+/// Upper bound on rows returned by /state and /metrics. The list is sorted
+/// waiting → working → idle before truncation, so the rows that matter most
+/// survive; the cap bounds response size against runaway session discovery.
+const MAX_SESSIONS: usize = 100;
 
 fn now_secs() -> f64 {
     SystemTime::now()
@@ -73,7 +78,29 @@ pub fn create_router(
         .route("/ack", post(ack_handler))
         .route("/hook", post(hook_handler))
         .route("/federation/ingest", post(ingest_handler))
+        // Token check runs as a layer BEFORE body extraction: unauthenticated
+        // requests are rejected without deserializing up to 2 MB of JSON, and
+        // malformed bodies can no longer distinguish 400-vs-401 pre-auth.
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_token))
         .with_state(state)
+}
+
+/// Auth layer for every route: constant-time token check before the request
+/// body is touched.
+async fn require_token(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    req: Request,
+    next: Next,
+) -> Response {
+    if !check_token(&headers, &app.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({"error":"unauthorized"})),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 /// Expose the dedupe logic so the federation node push-loop reuses it.
@@ -145,7 +172,9 @@ fn derive_rows(store: &Store, shared: &Shared, now: f64) -> Vec<SessionRow> {
         };
         let age = grp.iter().map(|d| d.age).fold(f64::INFINITY, f64::min);
         let waiting = grp.iter().any(|d| d.waiting);
-        let rep = grp
+        // Groups are non-empty by construction, but a request handler must
+        // never be one refactor away from a panic — skip instead of unwrap.
+        let Some(rep) = grp
             .iter()
             .filter(|d| d.waiting)
             .min_by(|a, b| {
@@ -160,7 +189,9 @@ fn derive_rows(store: &Store, shared: &Shared, now: f64) -> Vec<SessionRow> {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
             })
-            .unwrap();
+        else {
+            continue;
+        };
         let waiting_sec = grp.iter().filter_map(|d| d.waiting_sec).max();
         let summary = shared.titles.get(&rep.id).cloned();
         rows.push(SessionRow {
@@ -181,6 +212,7 @@ fn derive_rows(store: &Store, shared: &Shared, now: f64) -> Vec<SessionRow> {
             .then(a.tool.cmp(&b.tool))
             .then(a.project.cmp(&b.project))
     });
+    rows.truncate(MAX_SESSIONS);
     rows
 }
 
@@ -196,15 +228,7 @@ fn count_statuses(rows: &[SessionRow]) -> (usize, usize, usize) {
     (working, waiting, idle)
 }
 
-async fn state_handler(State(app): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !check_token(&headers, &app.token) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            axum::Json(serde_json::json!({"error":"unauthorized"})),
-        )
-            .into_response();
-    }
-
+async fn state_handler(State(app): State<AppState>) -> impl IntoResponse {
     let now = now_secs();
     let last_scan = app.store.last_scan();
     let shared = app.shared.read().unwrap_or_else(|p| p.into_inner());
@@ -249,10 +273,7 @@ async fn state_handler(State(app): State<AppState>, headers: HeaderMap) -> impl 
 /// other endpoint — configure the scrape job with `bearer_token` (or an
 /// `Authorization`/`X-VibeMonitor-Token` header) so usage and cost data is not
 /// exposed unauthenticated on non-localhost binds.
-async fn metrics_handler(State(app): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !check_token(&headers, &app.token) {
-        return (StatusCode::UNAUTHORIZED, String::new()).into_response();
-    }
+async fn metrics_handler(State(app): State<AppState>) -> impl IntoResponse {
     let now = now_secs();
     let last_scan = app.store.last_scan();
     let shared = app.shared.read().unwrap_or_else(|p| p.into_inner());
@@ -345,12 +366,8 @@ async fn metrics_handler(State(app): State<AppState>, headers: HeaderMap) -> imp
 /// aggregator's /state shows sessions from every machine.
 async fn ingest_handler(
     State(app): State<AppState>,
-    headers: HeaderMap,
     Json(payload): Json<FedPayload>,
 ) -> impl IntoResponse {
-    if !check_token(&headers, &app.token) {
-        return StatusCode::UNAUTHORIZED;
-    }
     app.remote.merge(payload, now_secs());
     StatusCode::OK
 }
@@ -360,14 +377,7 @@ struct AckBody {
     id: String,
 }
 
-async fn ack_handler(
-    State(app): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<AckBody>,
-) -> impl IntoResponse {
-    if !check_token(&headers, &app.token) {
-        return StatusCode::UNAUTHORIZED;
-    }
+async fn ack_handler(State(app): State<AppState>, Json(body): Json<AckBody>) -> impl IntoResponse {
     app.store.ack(&body.id);
     StatusCode::OK
 }
@@ -384,16 +394,19 @@ struct HookBody {
 
 async fn hook_handler(
     State(app): State<AppState>,
-    headers: HeaderMap,
     Json(body): Json<HookBody>,
 ) -> impl IntoResponse {
-    if !check_token(&headers, &app.token) {
-        return StatusCode::UNAUTHORIZED;
-    }
     let id = body.id.or(body.session_id).unwrap_or_default();
     let event = body.event.or(body.hook_event_name).unwrap_or_default();
-    if matches!(event.as_str(), "Notification") && !id.is_empty() {
-        app.store.mark_waiting(&id, now_secs());
+    if !id.is_empty() {
+        match event.as_str() {
+            // Claude is waiting for input — light up the session.
+            "Notification" => app.store.mark_waiting(&id, now_secs()),
+            // The turn ended — clear any waiting flag (docs/api.md documents
+            // both events; previously Stop was accepted but ignored).
+            "Stop" => app.store.ack(&id),
+            _ => {}
+        }
     }
     StatusCode::OK
 }
