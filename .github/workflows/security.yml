@@ -4,7 +4,7 @@ on:
   push:
     branches: [master, main]
     paths:
-      - "bridge/Cargo.lock"
+      - "Cargo.lock"
       - "firmware/Cargo.lock"
       - "bridge/Cargo.toml"
       - "firmware/Cargo.toml"
@@ -32,10 +32,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # bridge is a member of the root workspace — its dependencies are
+          # locked in the root Cargo.lock, so audit runs from the repo root.
           - workspace: bridge
-            lock: bridge/Cargo.lock
+            dir: "."
           - workspace: firmware
-            lock: firmware/Cargo.lock
+            dir: firmware
 
     steps:
       - name: Checkout repository
@@ -56,7 +58,7 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Run cargo-audit on ${{ matrix.workspace }}
-        working-directory: ${{ matrix.workspace }}
+        working-directory: ${{ matrix.dir }}
         env:
           RUSTUP_TOOLCHAIN: stable
         run: |

@@ -66,7 +66,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('bridge/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-
             ${{ runner.os }}-cargo-
@@ -96,7 +96,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ubuntu-latest-cargo-lint-${{ hashFiles('bridge/Cargo.lock') }}
+          key: ubuntu-latest-cargo-lint-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ubuntu-latest-cargo-lint-
             ubuntu-latest-cargo-
@@ -105,9 +105,113 @@ jobs:
       - name: Run Clippy (deny warnings)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # ── Firmware: ESP32 build (non-blocking — slow/flaky toolchain) ───────────
+  # ── Bridge: test coverage (non-blocking report) ───────────────────────────
+  bridge-coverage:
+    name: Bridge · Coverage
+    needs: changes
+    if: needs.changes.outputs.bridge == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Install libudev-dev (Linux — required by serialport)
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ubuntu-latest-cargo-cov-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ubuntu-latest-cargo-cov-
+            ubuntu-latest-cargo-
+      - name: Generate coverage (lcov)
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+      - name: Print coverage summary
+        run: cargo llvm-cov report --summary-only
+      - name: Upload to Codecov (tokenless, best-effort)
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+      - name: Upload lcov artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-coverage-lcov
+          path: lcov.info
+
+  # ── Firmware: ESP32 build matrix (blocking) ───────────────────────────────
+  # Every shipped feature combination must compile. BLE is known-broken on the
+  # current esp toolchain (see firmware/Cargo.toml) and runs as a separate
+  # allow-failure job below so the breakage stays visible without blocking.
   firmware-build:
-    name: Firmware · Build (esp32)
+    name: Firmware · Build (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.firmware == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: usb
+            flags: ""
+          - name: wifi-ota
+            flags: "--features wifi,ota"
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.ota"
+          - name: eink
+            flags: "--features eink"
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install esp Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ubuntu-latest-cargo-firmware-${{ hashFiles('firmware/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-latest-cargo-firmware-
+            ubuntu-latest-cargo-
+      - name: Build firmware (${{ matrix.name }})
+        env:
+          CARGO_TARGET_DIR: /tmp/fw-target
+          ESP_IDF_VERSION: v5.3.2
+          ESP_IDF_SDKCONFIG_DEFAULTS: ${{ matrix.sdkconfig }}
+          # Dummy compile-time credentials — the wifi build embeds these via
+          # env!(); CI only verifies that the code compiles.
+          VIBE_SSID: ci-dummy-ssid
+          VIBE_PASS: ci-dummy-pass
+          VIBE_HOST: 127.0.0.1
+          VIBE_PORT: "5151"
+          VIBE_TOKEN: ci-dummy-token
+        run: cargo build --release ${{ matrix.flags }}
+      - name: Verify ELF output exists
+        run: |
+          ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
+          if [ -f "$ELF" ]; then ls -lh "$ELF"; else echo "ERROR: ELF not found"; exit 1; fi
+
+  # ── Firmware: BLE build (allow-failure — blocked on esp-idf-svc 0.51) ─────
+  firmware-ble:
+    name: Firmware · Build (ble, allow-failure)
     needs: changes
     if: needs.changes.outputs.firmware == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -135,15 +239,12 @@ jobs:
           restore-keys: |
             ubuntu-latest-cargo-firmware-
             ubuntu-latest-cargo-
-      - name: Build firmware (USB transport — no WiFi feature)
+      - name: Build firmware (ble)
         env:
           CARGO_TARGET_DIR: /tmp/fw-target
           ESP_IDF_VERSION: v5.3.2
-        run: cargo build --release
-      - name: Verify ELF output exists
-        run: |
-          ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
-          if [ -f "$ELF" ]; then ls -lh "$ELF"; else echo "ERROR: ELF not found"; exit 1; fi
+          ESP_IDF_SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.defaults.ble"
+        run: cargo build --release --features ble
 
   # ── Aggregation gate — always runs, one required status for every PR ──────
   ci-gate:
@@ -156,10 +257,10 @@ jobs:
         run: |
           echo "bridge-test    = ${{ needs.bridge-test.result }}"
           echo "bridge-lint    = ${{ needs.bridge-lint.result }}"
-          echo "firmware-build = ${{ needs.firmware-build.result }} (non-blocking)"
+          echo "firmware-build = ${{ needs.firmware-build.result }}"
           # A 'skipped' result means the area was untouched — that is a pass.
-          # firmware-build is intentionally excluded from the blocking set.
-          for r in "${{ needs.bridge-test.result }}" "${{ needs.bridge-lint.result }}"; do
+          # firmware-ble is allow-failure and excluded from the blocking set.
+          for r in "${{ needs.bridge-test.result }}" "${{ needs.bridge-lint.result }}" "${{ needs.firmware-build.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::A required CI job did not pass ($r)."
               exit 1
