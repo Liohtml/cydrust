@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-30
+
+### Added
+- **Firmware** — WiFi build now sends real device ACKs: `send_ack` POSTs `/ack` with the session id and bearer token (previously a no-op TODO, so tap-to-ack silently did nothing over WiFi)
+- **Firmware** — Sessions/models past display capacity are now shown as a "+N more" row instead of silently vanishing
+- **Bridge** — 45 new tests covering the OpenCode/Hermes/Codex collectors and `vibe_hook` (previously zero coverage)
+- **Firmware** — `/state` parser and display-formatting helpers extracted into `proto.rs`, a pure-`std` module with 31 new host-run tests — the first test coverage the firmware crate has ever had, without needing the Xtensa toolchain
+- **CI** — Bridge coverage job (`cargo-llvm-cov` → Codecov); firmware feature matrix (usb, wifi+ota, eink) now builds as a blocking check, with BLE as a tracked allow-failure job
+- `rust-version = "1.86"` declared (empirically verified MSRV)
+- `docs/troubleshooting.md` and `docs/wsl2.md`
+
+### Changed
+- **Bridge** — Auth check now runs as router middleware, before JSON body extraction, so unauthenticated requests no longer pay deserialization cost or leak a 400-vs-401 oracle
+- **Bridge** — Only the hook events the hub evaluates (`Notification`, `Stop`) are registered with Claude Code; `Stop` now correctly clears the waiting flag
+- **Bridge** — Federation node ids are sanitized (a `/` could corrupt the dedupe key) and capped at 63 bytes; serial bridge ack ids are capped at 128 bytes
+- README trimmed from 870 to ~215 lines; endpoint/wiring/dev-workflow detail lives in `docs/` with the README linking out
+- Issue templates converted from Markdown to GitHub Issue Forms (YAML)
+- Replaced unmaintained `dirs-next` with `dirs` 6
+
+### Fixed
+- **CI** — `security.yml` audited a stale, frozen `bridge/Cargo.lock` (`vibe-bridge 0.1.0`) instead of the root workspace lockfile bridge actually builds against; deleted the stale file and repointed the workflow
+- **Bridge** — Fixed a latent panic path in `/state`'s row derivation (`.unwrap()` on an always-non-empty-by-construction group); capped `/state`/`/metrics` at 100 rows
+- **Bridge** — Federation push loop now recovers from panics like the other four background loops
+- Root housekeeping: internal audit docs (`FIXES_APPLIED.md`, `RUST_CODE_REVIEW.md`) moved to `docs/internal/`; broken `demo.gif` README reference fixed
+
 ## [0.2.0] - 2026-07-01
 
 ### Added
@@ -64,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Firmware** — Color palette: dark bg (#141414), Claude orange (#D97757), Codex purple (#A78BFA)
 - **Firmware** — Display layout: tab bar, header with usage %, session cards (up to 6), footer
 
-[Unreleased]: https://github.com/Liohtml/cydrust/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Liohtml/cydrust/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Liohtml/cydrust/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Liohtml/cydrust/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Liohtml/cydrust/releases/tag/v0.1.0
