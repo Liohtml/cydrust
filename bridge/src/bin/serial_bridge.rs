@@ -68,11 +68,18 @@ fn open_port(port_name: &str) -> Option<Box<dyn SerialPort>> {
     }
 }
 
+/// Longest ack id we accept from the wire. Session ids are UUIDs (36 chars);
+/// anything past this is a malformed or malicious frame, not an id.
+const MAX_ACK_ID_LEN: usize = 128;
+
 fn extract_ack_id(s: &str) -> Option<&str> {
     // minimal: find "ack":"<id>"
     let key = "\"ack\":\"";
     let start = s.find(key)? + key.len();
     let end = s[start..].find('"')? + start;
+    if end - start > MAX_ACK_ID_LEN {
+        return None;
+    }
     Some(&s[start..end])
 }
 
@@ -419,6 +426,15 @@ mod tests {
     #[test]
     fn extract_ack_id_empty_id_is_some_empty() {
         assert_eq!(extract_ack_id(r#"{"ack":""}"#), Some(""));
+    }
+
+    #[test]
+    fn extract_ack_id_rejects_oversized_ids() {
+        let huge = format!(r#"{{"ack":"{}"}}"#, "x".repeat(MAX_ACK_ID_LEN + 1));
+        assert_eq!(extract_ack_id(&huge), None);
+        // at the boundary it still parses
+        let max = format!(r#"{{"ack":"{}"}}"#, "x".repeat(MAX_ACK_ID_LEN));
+        assert!(extract_ack_id(&max).is_some());
     }
 
     // ── round3 ────────────────────────────────────────────────────────────
