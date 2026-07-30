@@ -1,12 +1,13 @@
 //! Fixture-based tests for the Codex rollout collector (`scan_codex`).
 //!
 //! Unlike the SQLite-backed OpenCode/Hermes collectors, Codex sessions are
-//! JSONL rollout files under `~/.codex/sessions/YYYY/MM/DD/*.jsonl`. The root is
-//! resolved via `dirs_next::home_dir()`, which — on Unix — reads the `$HOME`
-//! environment variable directly (see `dirs-sys-next`'s `target_unix_not_redox`
-//! implementation), so each test can safely redirect it to a `TempDir` fixture.
-//! Because environment variables are process-global, every test serialises
-//! through `ENV_LOCK`.
+//! JSONL rollout files under `~/.codex/sessions/YYYY/MM/DD/*.jsonl`. The root
+//! is resolved by `codex_sessions_root()`, which checks `$CODEX_HOME` before
+//! falling back to `dirs::home_dir()/.codex` — the same env-var-first pattern
+//! `collector_hermes.rs` uses, and portable (unlike hijacking `$HOME`, which
+//! `dirs::home_dir()` ignores on Windows). Each test points `$CODEX_HOME` at a
+//! `TempDir` fixture; because environment variables are process-global, every
+//! test serialises through `ENV_LOCK`.
 //!
 //! Rollout schema mirrored from the comment block in
 //! `bridge/src/collector_codex.rs`:
@@ -29,40 +30,40 @@ use vibe_bridge::{collector::scan_codex, model::Session, state::Store};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Sets `HOME` for the duration of a test and restores the previous value on
-/// drop. Holds the global lock so parallel tests cannot race on the process
-/// environment. `dirs_next::home_dir()` reads `$HOME` directly on Unix, so this
-/// is sufficient to redirect `codex_sessions_root()` without touching any
-/// production source file.
-struct HomeGuard {
+/// Sets `CODEX_HOME` for the duration of a test and restores the previous
+/// value on drop. Holds the global lock so parallel tests cannot race on the
+/// process environment.
+struct CodexHomeGuard {
     old: Option<String>,
     _lock: MutexGuard<'static, ()>,
 }
 
-impl HomeGuard {
+impl CodexHomeGuard {
     fn point_at(dir: &Path) -> Self {
         let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let old = env::var("HOME").ok();
-        env::set_var("HOME", dir);
+        let old = env::var("CODEX_HOME").ok();
+        env::set_var("CODEX_HOME", dir);
         Self { old, _lock: lock }
     }
 }
 
-impl Drop for HomeGuard {
+impl Drop for CodexHomeGuard {
     fn drop(&mut self) {
         match &self.old {
-            Some(v) => env::set_var("HOME", v),
-            None => env::remove_var("HOME"),
+            Some(v) => env::set_var("CODEX_HOME", v),
+            None => env::remove_var("CODEX_HOME"),
         }
     }
 }
 
 // ── fixture helpers ───────────────────────────────────────────────────────────
 
+/// `home` here is the fixture dir pointed at by `$CODEX_HOME` — i.e. already
+/// the `.codex`-equivalent root, so unlike the real `~/.codex` layout this
+/// does NOT join an extra `.codex` segment.
 fn day_dir(home: &Path, d: NaiveDate) -> PathBuf {
     use chrono::Datelike;
-    home.join(".codex")
-        .join("sessions")
+    home.join("sessions")
         .join(format!("{:04}", d.year()))
         .join(format!("{:02}", d.month()))
         .join(format!("{:02}", d.day()))
@@ -134,7 +135,7 @@ fn happy_path_sessions_with_status_project_and_age() {
         &["task_started"],
     );
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
 
@@ -176,7 +177,7 @@ fn turn_aborted_is_neither_waiting_nor_active() {
         &["task_started", "turn_aborted"],
     );
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
 
@@ -209,7 +210,7 @@ fn version_agnostic_fallback_uses_last_message_kind() {
         &["agent_message", "user_message"],
     );
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
 
@@ -236,7 +237,7 @@ fn yesterdays_rollouts_are_also_scanned() {
         &["task_complete"],
     );
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
 
@@ -258,7 +259,7 @@ fn rollouts_older_than_yesterday_are_ignored() {
         &["task_complete"],
     );
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
 
@@ -273,11 +274,11 @@ fn rollouts_older_than_yesterday_are_ignored() {
 #[test]
 fn missing_codex_root_yields_no_sessions_and_no_panic() {
     // Documenting current behaviour, analogous to a "missing table" for the
-    // SQLite collectors: no `~/.codex/sessions` directory at all — the
-    // collector returns immediately without creating anything or panicking.
-    let tmp = TempDir::new().unwrap(); // no .codex dir created at all
+    // SQLite collectors: no `sessions` directory under $CODEX_HOME at all —
+    // the collector returns immediately without creating anything or panicking.
+    let tmp = TempDir::new().unwrap(); // no sessions dir created at all
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store); // must not panic
     assert!(store.snapshot().is_empty());
@@ -289,7 +290,7 @@ fn empty_day_dir_yields_no_sessions_and_no_panic() {
     let today = Local::now().date_naive();
     fs::create_dir_all(day_dir(tmp.path(), today)).unwrap(); // dir exists, no files
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
     assert!(store.snapshot().is_empty());
@@ -304,7 +305,7 @@ fn non_jsonl_files_are_ignored() {
     fs::write(dir.join("notes.txt"), b"not a rollout").unwrap();
     fs::write(dir.join("data.json"), b"{}").unwrap();
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
     assert!(store.snapshot().is_empty());
@@ -326,7 +327,7 @@ fn malformed_jsonl_content_still_yields_a_session_with_fallback_defaults() {
     let path = dir.join(format!("rollout-2026-01-01T00-00-00-{uuid}.jsonl"));
     fs::write(&path, b"not json at all\n{{{ broken\n").unwrap();
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store); // must not panic
 
@@ -353,7 +354,7 @@ fn corrupt_binary_content_is_tolerated_via_lossy_decode() {
     let path = dir.join("rollout-binary-garbage.jsonl");
     fs::write(&path, [0xFF, 0xFE, 0x00, 0x01, 0x02, b'\n', 0xC0, 0xC1]).unwrap();
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store); // must not panic
 
@@ -378,7 +379,7 @@ fn repeated_scan_is_idempotent() {
         &["task_complete"],
     );
 
-    let _guard = HomeGuard::point_at(tmp.path());
+    let _guard = CodexHomeGuard::point_at(tmp.path());
     let store = Arc::new(Store::new());
     scan_codex(&store);
     scan_codex(&store);

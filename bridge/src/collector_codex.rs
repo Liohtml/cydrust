@@ -26,7 +26,21 @@ fn now_secs() -> f64 {
         .as_secs_f64()
 }
 
+/// Resolve Codex's session root.
+///
+/// Resolution order:
+///   1. $CODEX_HOME (matches the real Codex CLI's override for `~/.codex`)
+///   2. `dirs::home_dir()/.codex`
+///
+/// `$CODEX_HOME` is checked first (rather than relying on `$HOME`, which
+/// `dirs::home_dir()` ignores on Windows in favor of the profile-folder API)
+/// so this is portably overridable for tests.
 fn codex_sessions_root() -> PathBuf {
+    if let Ok(v) = std::env::var("CODEX_HOME") {
+        if !v.is_empty() {
+            return PathBuf::from(v).join("sessions");
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".codex")
