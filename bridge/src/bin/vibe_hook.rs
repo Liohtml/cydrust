@@ -1,8 +1,8 @@
 /// vibe_hook — the per-event hook process that Claude Code invokes.
 ///
-/// Claude Code fires lifecycle hooks (UserPromptSubmit, PreToolUse, PostToolUse,
-/// Stop, Notification, SessionStart) by spawning the configured command and
-/// piping a JSON object on STDIN. That JSON contains fields like
+/// Claude Code fires lifecycle hooks by spawning the configured command and
+/// piping a JSON object on STDIN. install_hooks registers this binary for the
+/// events the hub evaluates (Notification, Stop). The JSON contains fields like
 /// `hook_event_name`, `session_id`, `cwd`, and `transcript_path`.
 ///
 /// This process reads that payload, builds the body the hub's POST /hook handler

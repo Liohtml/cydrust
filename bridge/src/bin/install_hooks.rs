@@ -26,17 +26,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
-/// Events Claude Code fires that we register for. The hub only acts on
-/// "Notification" (marks waiting) today, but registering the full lifecycle
-/// makes status fully event-driven and is forward-compatible.
-const HOOK_EVENTS: &[&str] = &[
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "Stop",
-    "Notification",
-    "SessionStart",
-];
+/// Events Claude Code fires that we register for. Only events the hub
+/// actually evaluates: "Notification" marks a session waiting, "Stop"
+/// clears it. Registering more (PreToolUse/PostToolUse/...) would fire a
+/// vibe_hook POST on every tool call for no effect.
+const HOOK_EVENTS: &[&str] = &["Notification", "Stop"];
 
 /// Marker used to recognize (and thus replace/dedupe) our own command entries
 /// during merge, without clobbering unrelated user hooks.
@@ -108,6 +102,23 @@ fn merge_hooks(mut settings: Value, command: &str) -> Value {
         *hooks_entry = Value::Object(Map::new());
     }
     let hooks = hooks_entry.as_object_mut().unwrap();
+
+    // Strip our stale registrations from events we no longer subscribe to
+    // (earlier versions registered the full lifecycle). User hooks under
+    // those events are untouched; empty arrays we emptied are removed.
+    let stale: Vec<String> = hooks
+        .iter()
+        .filter(|(ev, _)| !HOOK_EVENTS.contains(&ev.as_str()))
+        .map(|(ev, _)| ev.clone())
+        .collect();
+    for ev in stale {
+        if let Some(blocks) = hooks.get_mut(&ev).and_then(|v| v.as_array_mut()) {
+            blocks.retain(|b| !block_is_ours(b));
+            if blocks.is_empty() {
+                hooks.remove(&ev);
+            }
+        }
+    }
 
     for ev in HOOK_EVENTS {
         let blocks_entry = hooks.entry(*ev).or_insert_with(|| Value::Array(Vec::new()));
@@ -346,12 +357,45 @@ mod tests {
         assert!(stop
             .iter()
             .any(|b| b["hooks"][0]["command"] == "echo user-stop"));
-        // user's PreToolUse Bash guard preserved
+        // user's PreToolUse Bash guard preserved — and no vibe block added,
+        // since PreToolUse is not an event the hub evaluates
         let pre_tool = merged["hooks"]["PreToolUse"].as_array().unwrap();
         assert!(pre_tool
             .iter()
             .any(|b| b["hooks"][0]["command"] == "echo guard"));
-        assert_eq!(ours_for(&merged, "PreToolUse"), 1);
+        assert_eq!(ours_for(&merged, "PreToolUse"), 0);
+    }
+
+    #[test]
+    fn merge_removes_stale_registrations_from_dropped_events() {
+        // Simulate a settings.json written by an older install_hooks that
+        // registered the full lifecycle, plus one user hook we must keep.
+        let cmd = "vibe_hook.exe --url http://localhost:5151 --token \"$VIBE_MONITOR_TOKEN\"";
+        let old: Value = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "matcher": "", "hooks": [ { "type": "command", "command": cmd } ] },
+                    { "matcher": "Bash", "hooks": [ { "type": "command", "command": "echo guard" } ] }
+                ],
+                "SessionStart": [
+                    { "matcher": "", "hooks": [ { "type": "command", "command": cmd } ] }
+                ]
+            }
+        });
+        let merged = merge_hooks(old, cmd);
+
+        // ours removed from dropped events, user hook kept
+        assert_eq!(ours_for(&merged, "PreToolUse"), 0);
+        let pre_tool = merged["hooks"]["PreToolUse"].as_array().unwrap();
+        assert!(pre_tool
+            .iter()
+            .any(|b| b["hooks"][0]["command"] == "echo guard"));
+        // event arrays left empty by the cleanup disappear entirely
+        assert!(merged["hooks"].get("SessionStart").is_none());
+        // current events registered exactly once
+        for ev in HOOK_EVENTS {
+            assert_eq!(ours_for(&merged, ev), 1);
+        }
     }
 
     #[test]

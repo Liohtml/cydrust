@@ -284,6 +284,41 @@ async fn post_hook_notification_event_marks_session_waiting() {
 }
 
 #[tokio::test]
+async fn post_hook_stop_event_clears_waiting_state() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use vibe_bridge::model::Session;
+
+    let (app, store) = make_app();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+
+    store.upsert(Session {
+        id: "stop-sess".into(),
+        tool: "claude".into(),
+        project: "p".into(),
+        last_activity: now,
+        waiting: true,
+        waiting_since: Some(now),
+        active_turn: false,
+    });
+
+    let req = post_json(
+        "/hook",
+        Some(TEST_TOKEN),
+        r#"{"id":"stop-sess","event":"Stop"}"#,
+    );
+    app.oneshot(req).await.unwrap();
+
+    let snap = store.snapshot();
+    assert!(
+        !snap[0].waiting,
+        "Stop event should clear the waiting flag (turn ended)"
+    );
+}
+
+#[tokio::test]
 async fn post_hook_uses_session_id_field_as_fallback() {
     use std::time::{SystemTime, UNIX_EPOCH};
     use vibe_bridge::model::Session;
