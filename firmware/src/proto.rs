@@ -164,10 +164,8 @@ pub fn parse_state(text: &str) -> Option<DisplayState> {
                         break;
                     }
                 }
-                ']' => {
-                    if depth == 1 {
-                        break;
-                    }
+                ']' if depth == 1 => {
+                    break;
                 }
                 _ => {}
             }
@@ -244,10 +242,8 @@ pub fn parse_metrics(text: &str) -> Metrics {
                         start = None;
                     }
                 }
-                ']' => {
-                    if d2 == 0 {
-                        break;
-                    }
+                ']' if d2 == 0 => {
+                    break;
                 }
                 _ => {}
             }
