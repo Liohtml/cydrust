@@ -1,0 +1,105 @@
+name: Bug Report
+description: Something is not working as expected
+title: "[Bug] "
+labels: ["bug"]
+assignees:
+  - Liohtml
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: component
+    attributes:
+      label: Component
+      options:
+        - label: Bridge (HTTP server / session collection)
+        - label: Serial Bridge (USB transport binary)
+        - label: Firmware (ESP32 display)
+        - label: CI / Build system
+        - label: Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: env-bridge
+    attributes:
+      label: Environment — Bridge / Serial Bridge
+      description: Fill in if the bug affects the bridge or serial_bridge.
+      placeholder: |
+        OS: Windows 11 / Ubuntu 22.04 / macOS 14
+        Rust version: (output of `rustc --version`)
+        Bridge version/commit: (git rev-parse --short HEAD)
+    validations:
+      required: false
+
+  - type: textarea
+    id: env-firmware
+    attributes:
+      label: Environment — Firmware
+      description: Fill in if the bug affects the ESP32 firmware.
+      placeholder: |
+        ESP32 board: e.g. ESP32-WROOM-32 DevKit v1, ESP32-S3-DevKitC-1
+        Display module: e.g. 2.0" ST7789 SPI 240x320
+        Transport mode: WiFi / USB serial
+        ESP-IDF version: from firmware/rust-toolchain.toml or `idf.py --version`
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: bridge-logs
+    attributes:
+      label: Bridge Output
+      description: Output of `RUST_LOG=debug cargo run`, if relevant.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: serial-logs
+    attributes:
+      label: Serial Monitor Output
+      description: Output of `cargo espflash monitor`, if relevant.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Screenshots, wiring photos, config (without secrets), anything else relevant.
+    validations:
+      required: false

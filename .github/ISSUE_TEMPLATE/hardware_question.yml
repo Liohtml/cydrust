@@ -1,0 +1,60 @@
+name: Hardware / Wiring Question
+description: Need help with ESP32 wiring, display setup, or flashing
+title: "[Hardware] "
+labels: ["hardware", "question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Hardware Question
+      description: What are you trying to set up or figure out?
+    validations:
+      required: true
+
+  - type: textarea
+    id: your-hardware
+    attributes:
+      label: Your Hardware
+      placeholder: |
+        ESP32 board: e.g. ESP32-WROOM-32 DevKit v1, CYD (ESP32-2432S028R)
+        Display module: e.g. 2.0" ST7789 SPI 240x320 with separate module
+        Connection type: SPI with individual jumper wires / CYD integrated display
+    validations:
+      required: true
+
+  - type: textarea
+    id: wiring
+    attributes:
+      label: Current Wiring
+      description: Describe how you have things connected, or paste a table.
+      placeholder: |
+        | ESP32 Pin | Display Pin |
+        |-----------|-------------|
+        |           |             |
+    validations:
+      required: false
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What Is Not Working
+      description: What symptom are you seeing? White screen, black screen, scrambled display, no WiFi, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: serial-output
+    attributes:
+      label: Serial Monitor Output
+      description: Output of `cargo espflash monitor`, if available.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What You Have Already Tried
+      description: Steps you have taken to debug the issue.
+    validations:
+      required: false

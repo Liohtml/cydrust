@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/Liohtml/cydrust/discussions
     about: General questions, ideas, and community discussion
   - name: Documentation
-    url: https://github.com/Liohtml/cydrust/tree/main/docs
+    url: https://github.com/Liohtml/cydrust/tree/master/docs
     about: Hardware wiring, API reference, development guide

@@ -1,0 +1,64 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description
+      description: A clear and concise description of the feature you'd like to see.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: component
+    attributes:
+      label: Component
+      options:
+        - label: Bridge (HTTP server / session collection)
+        - label: Serial Bridge (USB transport binary)
+        - label: Firmware (ESP32 display)
+        - label: Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem It Solves
+      description: What problem does this feature address? Why do you need it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you like this to work? Be as specific as you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware Requirements (Firmware Features)
+      description: Does this require specific hardware? Additional pins, sensors, display modules?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative approaches? Why is your proposed solution better?
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Mockups, references to similar implementations, related issues.
+    validations:
+      required: false
