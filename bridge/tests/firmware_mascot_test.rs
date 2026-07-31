@@ -47,6 +47,16 @@ fn offline_is_sleeping_even_with_working_sessions() {
     assert_eq!(mood_for(&ds), Mood::Sleeping);
 }
 
+/// Offline outranks Waiting: when the bridge is unreachable the session data is
+/// stale, so claiming a session is waiting for you would be actively
+/// misleading. Sleeping is the honest display for "state unknown".
+#[test]
+fn offline_outranks_waiting() {
+    let mut ds = state(vec![row(SessionStatus::Waiting, 10)]);
+    ds.offline = true;
+    assert_eq!(mood_for(&ds), Mood::Sleeping);
+}
+
 #[test]
 fn all_idle_is_sleeping() {
     let ds = state(vec![

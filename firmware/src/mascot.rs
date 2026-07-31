@@ -34,6 +34,9 @@ pub fn mood_index(m: Mood) -> usize {
 
 /// Priority ladder — first match wins. See the design doc for the rationale.
 pub fn mood_for(ds: &DisplayState) -> Mood {
+    // Checked before Waiting: offline means the session data is stale, so
+    // claiming a session is Waiting for you here would be actively misleading.
+    // Sleeping is the honest display for "state unknown".
     if ds.offline {
         return Mood::Sleeping;
     }

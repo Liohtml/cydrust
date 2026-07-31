@@ -108,11 +108,17 @@ Priority ladder, first match wins:
 
 | # | Condition | Mood |
 | --- | --- | --- |
+| 0 | `ds.offline` | `Sleeping` |
 | 1 | any session has `status == Waiting` | `Happy` |
 | 2 | count of `Working` sessions >= 2 | `Juggling` |
 | 3 | exactly 1 `Working` and its `age_sec > 120` | `Building` |
 | 4 | exactly 1 `Working` | `Typing` |
-| 5 | otherwise — offline, no sessions, or all idle | `Sleeping` |
+| 5 | otherwise — no sessions, or all idle | `Sleeping` |
+
+Rule 0 is checked first, ahead of `Waiting`: when the bridge is offline the
+session data is stale, so surfacing `Happy` ("someone needs you") from stale
+data would be actively misleading — `Sleeping` is the honest display for
+"state unknown".
 
 ### What rule 3 actually detects
 
