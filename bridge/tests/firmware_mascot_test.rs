@@ -148,3 +148,81 @@ fn mood_index_is_stable_and_unique() {
     let idx: Vec<usize> = all.iter().map(|m| mood_index(*m)).collect();
     assert_eq!(idx, vec![0, 1, 2, 3, 4]);
 }
+
+use mascot::{art_is_valid, snap_art, ART_LBL, ART_VALS};
+
+#[test]
+fn art_tables_line_up() {
+    assert_eq!(ART_VALS.len(), ART_LBL.len());
+    assert_eq!(ART_VALS[0], 0, "index 0 must be the Off value");
+}
+
+#[test]
+fn every_art_value_is_valid_when_sleep_is_never() {
+    for v in ART_VALS {
+        assert!(art_is_valid(v, 0), "{v} should be valid with sleep=Never");
+    }
+}
+
+#[test]
+fn off_is_always_valid() {
+    for sleep in [0u16, 1, 5, 15, 30] {
+        assert!(art_is_valid(0, sleep));
+    }
+}
+
+#[test]
+fn art_must_be_strictly_shorter_than_the_sleep_timeout() {
+    // sleep = 1m (60s): 30s fits, 60s does not (it would never fire), 5m does not
+    assert!(art_is_valid(30, 1));
+    assert!(!art_is_valid(60, 1));
+    assert!(!art_is_valid(300, 1));
+
+    // sleep = 5m (300s): 30s and 60s fit, 300s does not
+    assert!(art_is_valid(30, 5));
+    assert!(art_is_valid(60, 5));
+    assert!(!art_is_valid(300, 5));
+
+    // sleep = 15m (900s): everything fits
+    assert!(art_is_valid(300, 15));
+}
+
+#[test]
+fn snap_keeps_a_valid_value_untouched() {
+    assert_eq!(snap_art(60, 0), 60);
+    assert_eq!(snap_art(30, 1), 30);
+    assert_eq!(snap_art(300, 30), 300);
+}
+
+#[test]
+fn snap_drops_to_the_largest_valid_value() {
+    // sleep 1m invalidates 60 and 300 -> largest valid non-Off is 30
+    assert_eq!(snap_art(300, 1), 30);
+    assert_eq!(snap_art(60, 1), 30);
+    // sleep 5m invalidates only 300 -> falls back to 60
+    assert_eq!(snap_art(300, 5), 60);
+}
+
+#[test]
+fn snap_falls_back_to_off_when_nothing_fits() {
+    // A hypothetical very short sleep leaves no room for any art delay.
+    assert_eq!(
+        snap_art(300, 0 /* never */),
+        300,
+        "sleep=Never keeps the value"
+    );
+    // Construct the no-room case directly: sleep_min so small every art value loses.
+    // With SLEEP_VALS the smallest non-never sleep is 1m, and 30s fits, so the
+    // only way to reach Off is an unknown/garbage art value below 30s.
+    assert_eq!(
+        snap_art(29, 1),
+        0,
+        "a value smaller than every valid option snaps Off"
+    );
+}
+
+#[test]
+fn snap_normalises_values_that_are_not_in_the_table() {
+    assert_eq!(snap_art(45, 0), 30, "45s is not offered; snap down to 30s");
+    assert_eq!(snap_art(9999, 0), 300, "clamp to the largest offered value");
+}

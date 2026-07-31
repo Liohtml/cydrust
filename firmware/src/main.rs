@@ -94,9 +94,19 @@ struct Settings {
     brightness: u8,    // 10..=100 (%)
     sleep_min:  u16,   // 0=never, else minutes until screen-off
     dark:       bool,  // theme: true=dark, false=light
+    #[cfg(not(feature = "eink"))]
+    art_sec:    u16,   // 0=off, else seconds idle before the pixel art engages
 }
 impl Default for Settings {
-    fn default() -> Self { Settings { brightness: 100, sleep_min: 0, dark: true } }
+    fn default() -> Self {
+        Settings {
+            brightness: 100,
+            sleep_min: 0,
+            dark: true,
+            #[cfg(not(feature = "eink"))]
+            art_sec: 60,
+        }
+    }
 }
 
 const SLEEP_VALS: [u16; 5] = [0, 1, 5, 15, 30];
@@ -707,13 +717,23 @@ fn settings_load(nvs: &EspNvs<NvsDefault>) -> Settings {
     let sleep_min  = snap_sleep(nvs.get_u16("sleep").ok().flatten().unwrap_or(0));
     let dark       = nvs.get_u8("dark").ok().flatten().unwrap_or(1) != 0;
     DARK.store(dark, Ordering::Relaxed);
-    Settings { brightness, sleep_min, dark }
+    #[cfg(not(feature = "eink"))]
+    let art_sec = mascot::snap_art(nvs.get_u16("art").ok().flatten().unwrap_or(60), sleep_min);
+    Settings {
+        brightness,
+        sleep_min,
+        dark,
+        #[cfg(not(feature = "eink"))]
+        art_sec,
+    }
 }
 
 fn settings_save(nvs: &mut EspNvs<NvsDefault>, s: &Settings) {
     let _ = nvs.set_u8("bright", s.brightness);
     let _ = nvs.set_u16("sleep", s.sleep_min);
     let _ = nvs.set_u8("dark", s.dark as u8);
+    #[cfg(not(feature = "eink"))]
+    let _ = nvs.set_u16("art", s.art_sec);
 }
 
 // Acknowledge a waiting session. USB: emit a clean `{"ack":"<id>"}` line that the

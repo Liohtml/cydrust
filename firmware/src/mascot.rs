@@ -59,3 +59,27 @@ pub fn mood_for(ds: &DisplayState) -> Mood {
         _ => Mood::Juggling,
     }
 }
+
+/// Idle delay before the art auto-engages, in seconds. 0 = Off.
+pub const ART_VALS: [u16; 4] = [0, 30, 60, 300];
+pub const ART_LBL: [&str; 4] = ["Off", "30s", "1m", "5m"];
+
+/// An art delay is only meaningful if the screen has not already blanked.
+/// `sleep_min == 0` means Never, so everything is valid then.
+pub fn art_is_valid(art_sec: u16, sleep_min: u16) -> bool {
+    if art_sec == 0 || sleep_min == 0 {
+        return true;
+    }
+    (art_sec as u32) < (sleep_min as u32) * 60
+}
+
+/// Normalise `art_sec` to the largest offered value that is <= it and valid for
+/// the current `sleep_min`, or Off when none qualifies.
+pub fn snap_art(art_sec: u16, sleep_min: u16) -> u16 {
+    ART_VALS
+        .iter()
+        .copied()
+        .filter(|&v| v <= art_sec && art_is_valid(v, sleep_min))
+        .max()
+        .unwrap_or(0)
+}
