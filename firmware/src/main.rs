@@ -73,7 +73,14 @@ compile_error!("`eink` is a USB-transport display variant and is mutually exclus
 // ── Data model ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Tab { Sessions, Usage, Metrics, Settings }
+enum Tab {
+    Sessions,
+    Usage,
+    Metrics,
+    #[cfg(not(feature = "eink"))]
+    Pixel,
+    Settings,
+}
 
 // Sessions tab can show the list or a single-session detail overlay.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -246,20 +253,48 @@ fn provider_meta(tool: &str) -> (&'static str, Rgb565) {
 
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 
+// 320 px / 5 tabs = 64 px each (1 px gutters). Labels are shortened to fit
+// FONT_7X13_BOLD inside 64 px. The e-ink build keeps the original four.
 fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(d: &mut D, active: Tab) {
-    let tabs: &[(&str, i32, u32, Tab)] = &[
-        ("SESSIONS", 40,  79, Tab::Sessions),
-        ("USAGE",    120, 79, Tab::Usage),
-        ("METRICS",  200, 79, Tab::Metrics),
-        ("SETTINGS", 280, 79, Tab::Settings),
+    #[cfg(not(feature = "eink"))]
+    let tabs: &[(&str, Tab)] = &[
+        ("SESS",   Tab::Sessions),
+        ("USAGE",  Tab::Usage),
+        ("METRIC", Tab::Metrics),
+        ("PIXEL",  Tab::Pixel),
+        ("SET",    Tab::Settings),
     ];
+    #[cfg(feature = "eink")]
+    let tabs: &[(&str, Tab)] = &[
+        ("SESSIONS", Tab::Sessions),
+        ("USAGE",    Tab::Usage),
+        ("METRICS",  Tab::Metrics),
+        ("SETTINGS", Tab::Settings),
+    ];
+
+    let n = tabs.len() as i32;
+    let w = (320 - (n + 1)) / n;         // 5 tabs -> 62 px; 4 tabs -> 78 px
     let mut x = 1i32;
-    for (label, cx, w, tab) in tabs {
+    for (label, tab) in tabs {
         let (bg, fg) = if *tab == active { (c_claude(), c_bg()) } else { (c_panel(), c_dim()) };
-        rfill(d, x, 1, *w, 24, 5, bg);
-        txt(d, &FONT_7X13_BOLD, label, *cx, 17, Alignment::Center, fg);
-        x += *w as i32 + 1;
+        rfill(d, x, 1, w as u32, 24, 5, bg);
+        txt(d, &FONT_7X13_BOLD, label, x + w / 2, 17, Alignment::Center, fg);
+        x += w + 1;
     }
+}
+
+// Screen-x -> Tab, matching the geometry above. Kept next to draw_tab_bar so
+// the two cannot drift apart.
+fn tab_at(sx: i32) -> Tab {
+    #[cfg(not(feature = "eink"))]
+    let tabs = [Tab::Sessions, Tab::Usage, Tab::Metrics, Tab::Pixel, Tab::Settings];
+    #[cfg(feature = "eink")]
+    let tabs = [Tab::Sessions, Tab::Usage, Tab::Metrics, Tab::Settings];
+
+    let n = tabs.len() as i32;
+    let w = (320 - (n + 1)) / n;
+    let i = ((sx - 1) / (w + 1)).clamp(0, n - 1) as usize;
+    tabs[i]
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -275,10 +310,14 @@ fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(d: &mut D, active: Tab) {
 // plain data refresh it is false and each element repaints over its own region,
 // so the screen never blanks ("background" refresh — no flicker).
 fn render<D: DrawTarget<Color = Rgb565>>(
-    display: &mut D, ds: &DisplayState, active: Tab, view: View, set: &Settings, full_clear: bool,
+    display: &mut D, ds: &DisplayState, active: Tab, view: View, set: &Settings,
+    full_clear: bool, frame_idx: usize, full_screen: bool,
 ) {
+    #[cfg(feature = "eink")]
+    let _ = (frame_idx, full_screen);
+
     if full_clear { fill(display, 0, 0, 320, 240, c_bg()); }
-    draw_tab_bar(display, active);
+    if !full_screen { draw_tab_bar(display, active); }
 
     match active {
         Tab::Sessions => match view {
@@ -290,8 +329,35 @@ fn render<D: DrawTarget<Color = Rgb565>>(
         },
         Tab::Usage    => render_usage(display, ds),
         Tab::Metrics  => render_metrics(display, &ds.metrics),
+        #[cfg(not(feature = "eink"))]
+        Tab::Pixel    => render_pixel(display, ds, frame_idx, full_clear),
         Tab::Settings => render_settings(display, set),
     }
+}
+
+// Pixel-art mascot. `full_screen` hides the tab bar (auto-engaged screensaver
+// mode); otherwise the sprite sits below the 26 px bar.
+#[cfg(not(feature = "eink"))]
+fn render_pixel<D: DrawTarget<Color = Rgb565>>(
+    display: &mut D, ds: &DisplayState, frame_idx: usize, full_clear: bool,
+) {
+    // `Rectangle`, `Point` and `Size` are already in scope from main.rs's
+    // top-level imports — do not re-import, clippy denies that.
+    if full_clear { fill(display, 0, 26, 320, 214, c_bg()); }
+
+    let Some(sprites) = sprite::Sprites::parse(sprite::BLOB) else { return };
+    let mood = mascot::mood_for(ds);
+    let Some(px) = sprites.frame(
+        mascot::mood_index(mood),
+        frame_idx % sprite::FRAMES,
+        c_bg(),
+    ) else { return };
+
+    let area = Rectangle::new(
+        Point::new(96, 69),
+        Size::new(sprite::SPRITE_W, sprite::SPRITE_H),
+    );
+    let _ = display.fill_contiguous(&area, px);
 }
 
 fn render_metrics<D: DrawTarget<Color = Rgb565>>(display: &mut D, m: &Metrics) {
@@ -954,10 +1020,7 @@ fn run() -> Result<()> {
                     set_brightness(&mut bl, settings.brightness);
                     prev = None;
                 } else if sy < 34 {
-                    active_tab = if sx < 80 { Tab::Sessions }
-                                 else if sx < 160 { Tab::Usage }
-                                 else if sx < 240 { Tab::Metrics }
-                                 else { Tab::Settings };
+                    active_tab = tab_at(sx);
                     view = View::List;
                 } else if active_tab == Tab::Sessions {
                     view = sessions_touch(sx, sy, view, &ds);
@@ -996,7 +1059,7 @@ fn run() -> Result<()> {
                     _             => p.0 != ds,
                 }).unwrap_or(true);
                 if layout_changed || content_changed {
-                    render(&mut display, &ds, active_tab, view, &settings, layout_changed);
+                    render(&mut display, &ds, active_tab, view, &settings, layout_changed, 0, false);
                     prev = Some((ds.clone(), active_tab, view, settings));
                 }
             }
@@ -1106,10 +1169,7 @@ fn run() -> Result<()> {
                     set_brightness(&mut bl, settings.brightness);
                     prev = None;
                 } else if sy < 34 {
-                    active_tab = if sx < 80 { Tab::Sessions }
-                                 else if sx < 160 { Tab::Usage }
-                                 else if sx < 240 { Tab::Metrics }
-                                 else { Tab::Settings };
+                    active_tab = tab_at(sx);
                     view = View::List;
                 } else if active_tab == Tab::Sessions {
                     view = sessions_touch(sx, sy, view, &state);
@@ -1150,7 +1210,7 @@ fn run() -> Result<()> {
                     _             => p.0 != state,
                 }).unwrap_or(true);
                 if layout_changed || content_changed {
-                    render(&mut display, &state, active_tab, view, &settings, layout_changed);
+                    render(&mut display, &state, active_tab, view, &settings, layout_changed, 0, false);
                     prev = Some((state, active_tab, view, settings));
                 }
             }
