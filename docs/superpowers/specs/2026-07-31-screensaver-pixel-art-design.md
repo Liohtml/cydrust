@@ -163,10 +163,25 @@ session-card tap. Otherwise waking the device would trigger a random action.
 Auto-engaging while already on the PIXEL tab is not a special case: the tab bar
 hides, and the dismissing touch restores the PIXEL tab with its bar.
 
-The idle timer is reset by **touch only**. Incoming state changes do not reset
-it and do not wake the screen — a session going `Waiting` while the art is up
-changes the animation to `Happy` but does not dismiss the screensaver. Waking
-the device on remote events is a separate feature and deliberately out of scope.
+The idle timer is reset by **touch only**, and is therefore a *separate clock*
+from the existing sleep timer.
+
+This distinction is load-bearing. `main.rs:950-953` already resets `last_touch`
+— and wakes the device from sleep — whenever any session is `Waiting`. If the
+art timer reused `last_touch`, art could never auto-engage while a session was
+waiting, so `Happy` (ladder rule 1, the whole reason `Waiting` ranks first)
+would be reachable only from the manual tab.
+
+So:
+
+| clock | reset by | drives |
+| --- | --- | --- |
+| `last_touch` (existing) | touch **or** any `Waiting` session | `sleep_min` screen-off |
+| `last_art_touch` (new) | touch only | `art_sec` auto-engage |
+
+Existing wake-on-waiting behaviour is preserved unchanged. A session going
+`Waiting` while art is up switches the animation to `Happy` but does not dismiss
+the screensaver. Waking the device on remote events is out of scope.
 
 ---
 
@@ -227,10 +242,18 @@ life. That build keeps its existing 4 tabs; no sprite data is compiled into it.
 Adding an idle timer and animation clock to both would duplicate roughly 40
 more lines and invite the two copies to drift.
 
-This design extracts the shared per-tick UI logic into a single `UiState`
-struct — holding `active_tab`, `view`, `settings`, `prev`, idle deadline, and
-animation frame — which both transports drive. This is scoped to the loops this
-feature already has to modify; it is not a general refactor of `main.rs`.
+All of the **new** logic therefore lives in a single `ArtState` struct — idle
+deadline, engaged flag, frame counter, and the `tick`/`wake` transitions — which
+both transports construct and drive identically. The duplication that remains is
+roughly six lines of wiring per loop, not forty lines of behaviour, so the two
+copies have nothing meaningful left to drift on.
+
+Deliberately **not** done: hoisting the pre-existing `active_tab` / `view` /
+`settings` / `prev` locals into a shared `UiState` as well. That would rewrite
+working code this feature does not otherwise touch, and no ESP32 toolchain is
+available locally to verify it — the only check would be a 4½-minute CI build
+per attempt. If those loops are unified later it should be its own change, with
+its own review.
 
 ---
 
