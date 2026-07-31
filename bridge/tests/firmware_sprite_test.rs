@@ -6,11 +6,79 @@
 #[path = "../../firmware/src/sprite.rs"]
 mod sprite;
 
+use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::{RawData, RgbColor};
 use sprite::{Sprites, BLOB, FRAMES, SPRITE_H, SPRITE_W};
 
 const BG: Rgb565 = Rgb565::BLACK;
+
+// ── Synthetic-blob builder (for FramePixels defensive-path coverage) ───────
+//
+// The real committed sprites.bin is well-formed by construction, so it never
+// exercises FramePixels's short-frame/long-frame/zero-run/out-of-range-index
+// branches. These constants mirror the private layout constants in
+// `firmware/src/sprite.rs` (not `pub`, so re-declared here) to build minimal,
+// otherwise-valid blobs whose single frame-under-test payload we control.
+const MOODS: usize = 5;
+const PALETTE_LEN: usize = 16;
+const HEADER: usize = 10;
+const TABLE_AT: usize = HEADER + PALETTE_LEN * 2; // 42
+const TABLE_ENTRIES: usize = MOODS * FRAMES; // 80
+const TABLE_BYTES: usize = TABLE_ENTRIES * 8; // 640
+const PAYLOAD_AT: usize = TABLE_AT + TABLE_BYTES; // 682
+
+/// Builds a minimal, otherwise-valid synthetic blob whose only frame under
+/// test is `(mood, frame)`, with `payload` as its raw RLE bytes. Every other
+/// frame-table slot points at a small filler run so `Sprites::parse` accepts
+/// the whole blob — but no test here ever calls `.frame()` on a filler slot,
+/// so its content is irrelevant. Palette entry `i` is given raw value `i`
+/// (arbitrary but distinct and deterministic), so `palette_color(i)` tells a
+/// test what colour a given index must decode to.
+fn synthetic_blob(mood: usize, frame: usize, payload: &[u8]) -> Vec<u8> {
+    assert_eq!(
+        payload.len() % 2,
+        0,
+        "RLE payload must be an even number of bytes"
+    );
+    let mut blob = Vec::new();
+    blob.extend_from_slice(b"CYDS");
+    blob.push(1); // version
+    blob.push(MOODS as u8);
+    blob.push(FRAMES as u8);
+    blob.push(SPRITE_W as u8);
+    blob.push(SPRITE_H as u8);
+    blob.push(PALETTE_LEN as u8);
+    assert_eq!(blob.len(), HEADER);
+    for i in 0..PALETTE_LEN {
+        blob.extend_from_slice(&(i as u16).to_le_bytes());
+    }
+    assert_eq!(blob.len(), TABLE_AT);
+
+    const FILLER: [u8; 2] = [1, 0]; // run=1, idx=0 — never decoded in these tests
+    let filler_off = payload.len() as u32;
+    for i in 0..TABLE_ENTRIES {
+        let (off, len) = if i == mood * FRAMES + frame {
+            (0u32, payload.len() as u32)
+        } else {
+            (filler_off, FILLER.len() as u32)
+        };
+        blob.extend_from_slice(&off.to_le_bytes());
+        blob.extend_from_slice(&len.to_le_bytes());
+    }
+    assert_eq!(blob.len(), PAYLOAD_AT);
+
+    blob.extend_from_slice(payload);
+    blob.extend_from_slice(&FILLER);
+    blob
+}
+
+/// The colour a raw palette index `i` (as written by `synthetic_blob`) must
+/// decode to — mirrors the production `Rgb565::from(RawU16::new(..))`
+/// conversion so tests assert against the same mapping the decoder uses.
+fn palette_color(idx: u8) -> Rgb565 {
+    Rgb565::from(RawU16::new(idx as u16))
+}
 
 #[test]
 fn parses_the_committed_blob() {
@@ -91,6 +159,126 @@ fn decoding_is_stable_across_calls() {
     let a: Vec<Rgb565> = s.frame(0, 0, BG).unwrap().collect();
     let b: Vec<Rgb565> = s.frame(0, 0, BG).unwrap().collect();
     assert_eq!(a, b);
+}
+
+// ── Hostile-input coverage for FramePixels's defensive branches ────────────
+//
+// Each test bounds its iterator with `.take(20_000)` before collecting: if a
+// future regression reintroduced an unbounded loop, these would fail with a
+// length mismatch instead of hanging the whole suite.
+
+#[test]
+fn short_frame_pads_the_remainder_with_background() {
+    // Runs sum to only 5 pixels; the decoder must pad the other 16379 with bg.
+    let payload = [5u8, 3u8];
+    let blob = synthetic_blob(0, 0, &payload);
+    let s = Sprites::parse(&blob).expect("synthetic blob should parse");
+    let bg = Rgb565::new(1, 2, 3); // distinct from every palette colour (raw 0..16)
+    let px: Vec<Rgb565> = s.frame(0, 0, bg).unwrap().take(20_000).collect();
+    assert_eq!(px.len(), (SPRITE_W * SPRITE_H) as usize);
+    let want = palette_color(3);
+    assert_eq!(
+        &px[..5],
+        [want; 5],
+        "the 5 real pixels must use the run's colour"
+    );
+    assert!(
+        px[5..].iter().all(|&c| c == bg),
+        "everything past the real runs must be padded with bg"
+    );
+}
+
+#[test]
+fn long_frame_truncates_the_overrun_without_emitting_extra_pixels() {
+    // 70 runs of 255 = 17850 pixels of demand, well past the 16384-pixel cap.
+    let mut payload = Vec::new();
+    for _ in 0..70 {
+        payload.push(255u8);
+        payload.push(4u8);
+    }
+    let blob = synthetic_blob(1, 2, &payload);
+    let s = Sprites::parse(&blob).expect("synthetic blob should parse");
+    let bg = Rgb565::new(1, 2, 3);
+    let px: Vec<Rgb565> = s.frame(1, 2, bg).unwrap().take(20_000).collect();
+    assert_eq!(
+        px.len(),
+        (SPRITE_W * SPRITE_H) as usize,
+        "iterator must stop exactly at SPRITE_W*SPRITE_H, not emit the full 17850"
+    );
+    let want = palette_color(4);
+    assert!(
+        px.iter().all(|&c| c == want),
+        "every emitted pixel should be the run's colour — truncation, not corruption"
+    );
+}
+
+#[test]
+fn zero_length_run_is_skipped_without_hanging() {
+    // Two defensive zero-run pairs (each still emits one bg pixel and always
+    // advances past its 2 bytes), then one real run of 5 pixels at index 2.
+    let payload = [0u8, 9u8, 0u8, 9u8, 5u8, 2u8];
+    let blob = synthetic_blob(2, 3, &payload);
+    let s = Sprites::parse(&blob).expect("synthetic blob should parse");
+    let bg = Rgb565::new(1, 2, 3);
+    let px: Vec<Rgb565> = s.frame(2, 3, bg).unwrap().take(20_000).collect();
+    assert_eq!(px.len(), (SPRITE_W * SPRITE_H) as usize);
+    assert_eq!(px[0], bg, "first zero-run pair must pad with bg, not hang");
+    assert_eq!(px[1], bg, "second zero-run pair must also pad with bg");
+    let want = palette_color(2);
+    assert_eq!(
+        &px[2..7],
+        [want; 5],
+        "the real run must still decode correctly"
+    );
+    assert!(
+        px[7..].iter().all(|&c| c == bg),
+        "remainder must be padded with bg (short frame)"
+    );
+}
+
+#[test]
+fn frame_table_entry_with_max_offset_is_rejected() {
+    let mut bad = BLOB.to_vec();
+    // Offset field of the first frame-table entry (mood0/frame0) sits at 42..46.
+    bad[42..46].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(Sprites::parse(&bad).is_none());
+}
+
+#[test]
+fn frame_table_entry_with_max_offset_and_length_is_rejected() {
+    let mut bad = BLOB.to_vec();
+    bad[42..46].copy_from_slice(&u32::MAX.to_le_bytes());
+    bad[46..50].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(Sprites::parse(&bad).is_none());
+}
+
+#[test]
+fn rejects_a_blob_truncated_mid_palette() {
+    // Header (10 bytes) present but the 32-byte palette (ending at offset 42)
+    // is cut short.
+    assert!(Sprites::parse(&BLOB[..20]).is_none());
+}
+
+#[test]
+fn rejects_a_blob_truncated_mid_frame_table() {
+    // Palette complete (ends at offset 42) but the 640-byte frame table
+    // (ending at offset 682) is cut short.
+    assert!(Sprites::parse(&BLOB[..300]).is_none());
+}
+
+#[test]
+fn palette_index_beyond_the_palette_falls_back_to_background() {
+    // The palette has 16 entries (0..=15); index 200 is out of range.
+    let payload = [50u8, 200u8];
+    let blob = synthetic_blob(3, 5, &payload);
+    let s = Sprites::parse(&blob).expect("synthetic blob should parse");
+    let bg = Rgb565::new(1, 2, 3);
+    let px: Vec<Rgb565> = s.frame(3, 5, bg).unwrap().take(20_000).collect();
+    assert_eq!(px.len(), (SPRITE_W * SPRITE_H) as usize);
+    assert!(
+        px.iter().all(|&c| c == bg),
+        "out-of-range palette index must fall back to bg, never panic"
+    );
 }
 
 /// Golden test (design doc section 8): pins the decoded artwork so a
