@@ -47,6 +47,10 @@ mod icons;
 // Pure protocol/formatting logic (no esp-idf deps) — shared with the host test
 // suite via `#[path]` (see bridge/tests/firmware_proto_test.rs).
 mod proto;
+// Activity -> animation mapping for the pixel tab. Std-only, host-tested (see
+// bridge/tests/firmware_mascot_test.rs).
+#[cfg(not(feature = "eink"))]
+mod mascot;
 #[cfg(all(feature = "wifi", feature = "ota"))]
 mod ota;
 #[cfg(all(feature = "ble", not(feature = "wifi")))]
