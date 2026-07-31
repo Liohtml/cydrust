@@ -22,6 +22,9 @@ managed-components/
 !sdkconfig.defaults
 sdkconfig
 *.bin
+# firmware/assets/sprites.bin is a committed, pre-generated asset (not a build
+# artefact) produced by tools/gif2sprite.py — builders must not need Pillow.
+!firmware/assets/sprites.bin
 *.elf
 *.map
 build/
