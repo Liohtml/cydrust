@@ -111,7 +111,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.bridge == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -133,16 +132,30 @@ jobs:
           restore-keys: |
             ubuntu-latest-cargo-cov-
             ubuntu-latest-cargo-
+      # Best-effort report: a coverage hiccup must not paint the commit red, so
+      # the fallible steps carry continue-on-error rather than the job (a
+      # job-level flag still reports the check run itself as failed).
       - name: Generate coverage (lcov)
+        id: cov
+        continue-on-error: true
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
       - name: Print coverage summary
+        if: steps.cov.outcome == 'success'
+        continue-on-error: true
         run: cargo llvm-cov report --summary-only
+      - name: Note coverage failure
+        if: steps.cov.outcome != 'success'
+        run: echo "::warning title=Coverage report skipped::cargo llvm-cov failed; this job is informational and does not block CI."
       - name: Upload to Codecov (tokenless, best-effort)
+        if: steps.cov.outcome == 'success'
+        continue-on-error: true
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           fail_ci_if_error: false
       - name: Upload lcov artifact
+        if: steps.cov.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: bridge-coverage-lcov
@@ -151,7 +164,7 @@ jobs:
   # ── Firmware: ESP32 build matrix (blocking) ───────────────────────────────
   # Every shipped feature combination must compile. BLE is known-broken on the
   # current esp toolchain (see firmware/Cargo.toml) and runs as a separate
-  # allow-failure job below so the breakage stays visible without blocking.
+  # non-blocking job below so the breakage stays visible without blocking.
   firmware-build:
     name: Firmware · Build (${{ matrix.name }})
     needs: changes
@@ -165,7 +178,7 @@ jobs:
             flags: ""
           - name: wifi-ota
             flags: "--features wifi,ota"
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.ota"
+            sdkconfig_extra: sdkconfig.defaults.ota
           - name: eink
             flags: "--features eink"
     defaults:
@@ -191,11 +204,23 @@ jobs:
           restore-keys: |
             ubuntu-latest-cargo-firmware-
             ubuntu-latest-cargo-
+      # esp-idf-sys silently drops RELATIVE entries in ESP_IDF_SDKCONFIG_DEFAULTS,
+      # so a layered config has to be passed as absolute paths or the extra layer
+      # never reaches the IDF build (see firmware/sdkconfig.defaults.ble).
+      - name: Compose absolute ESP_IDF_SDKCONFIG_DEFAULTS
+        id: sdkconfig
+        run: |
+          LIST="$GITHUB_WORKSPACE/firmware/sdkconfig.defaults"
+          EXTRA="${{ matrix.sdkconfig_extra }}"
+          if [ -n "$EXTRA" ]; then
+            LIST="$LIST;$GITHUB_WORKSPACE/firmware/$EXTRA"
+          fi
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
       - name: Build firmware (${{ matrix.name }})
         env:
           CARGO_TARGET_DIR: /tmp/fw-target
           ESP_IDF_VERSION: v5.3.2
-          ESP_IDF_SDKCONFIG_DEFAULTS: ${{ matrix.sdkconfig }}
+          ESP_IDF_SDKCONFIG_DEFAULTS: ${{ steps.sdkconfig.outputs.list }}
           # Dummy compile-time credentials — the wifi build embeds these via
           # env!(); CI only verifies that the code compiles.
           VIBE_SSID: ci-dummy-ssid
@@ -208,14 +233,32 @@ jobs:
         run: |
           ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
           if [ -f "$ELF" ]; then ls -lh "$ELF"; else echo "ERROR: ELF not found"; exit 1; fi
+      # Confirms the extra sdkconfig layer actually reached the IDF build rather
+      # than being silently dropped. Warning-only for now; promote to a hard
+      # failure once it has been observed green.
+      - name: Verify layered sdkconfig applied (wifi-ota)
+        if: matrix.name == 'wifi-ota'
+        run: |
+          MERGED=$(find /tmp/fw-target -path '*esp-idf-sys-*/out/sdkconfig' | head -1)
+          if [ -z "$MERGED" ]; then
+            echo "::warning::merged sdkconfig not found — cannot verify the OTA layer"
+          elif grep -q '^CONFIG_PARTITION_TABLE_CUSTOM=y' "$MERGED"; then
+            echo "OTA sdkconfig layer applied ($MERGED)"
+          else
+            echo "::warning::sdkconfig.defaults.ota did NOT reach the IDF build ($MERGED)"
+          fi
 
-  # ── Firmware: BLE build (allow-failure — blocked on esp-idf-svc 0.51) ─────
+  # ── Firmware: BLE build (non-blocking — blocked on esp-idf-svc 0.51) ──────
+  # `continue-on-error` deliberately sits on the BUILD STEP, not on the job: at
+  # job level GitHub still reports the check run itself as a failure, so master
+  # showed a permanent red X for a breakage we knowingly accept. At step level
+  # the job reports green and the breakage is surfaced as an annotation plus a
+  # job summary instead.
   firmware-ble:
-    name: Firmware · Build (ble, allow-failure)
+    name: Firmware · Build (ble, non-blocking)
     needs: changes
     if: needs.changes.outputs.firmware == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    continue-on-error: true
     defaults:
       run:
         working-directory: firmware
@@ -240,11 +283,33 @@ jobs:
             ubuntu-latest-cargo-firmware-
             ubuntu-latest-cargo-
       - name: Build firmware (ble)
+        id: build
+        continue-on-error: true
         env:
           CARGO_TARGET_DIR: /tmp/fw-target
           ESP_IDF_VERSION: v5.3.2
-          ESP_IDF_SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.defaults.ble"
+          # Absolute paths — esp-idf-sys silently drops relative entries, which
+          # is why the NimBLE options never reached the IDF build and the
+          # `esp_idf_sys::ble_*` bindings came up missing.
+          ESP_IDF_SDKCONFIG_DEFAULTS: "${{ github.workspace }}/firmware/sdkconfig.defaults;${{ github.workspace }}/firmware/sdkconfig.defaults.ble"
         run: cargo build --release --features ble
+      - name: Report BLE build status
+        run: |
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            echo "### ✅ BLE firmware built" >> "$GITHUB_STEP_SUMMARY"
+            echo "The known BLE breakage is resolved — consider promoting this job to blocking." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=BLE build failing (known, non-blocking)::esp32-nimble 0.9 declares the removed #![feature(inline_const_pat)] and will not compile on the current esp toolchain. Tracked in firmware/Cargo.toml."
+            {
+              echo "### ⚠️ BLE firmware build failed (known, non-blocking)"
+              echo ""
+              echo "\`esp32-nimble\` 0.9 declares the removed \`#![feature(inline_const_pat)]\` (rustc \`E0557\`)"
+              echo "and cannot compile on the current esp toolchain. Unblocking it needs"
+              echo "\`esp32-nimble\` >= 0.11.1, which requires \`esp-idf-svc\` 0.51 — that bump previously"
+              echo "regressed the default build with an embassy-executor \`__pender\` link error."
+              echo "See the pin rationale in \`firmware/Cargo.toml\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # ── Aggregation gate — always runs, one required status for every PR ──────
   ci-gate:
