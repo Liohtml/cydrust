@@ -676,6 +676,25 @@ fn render_settings<D: DrawTarget<Color = Rgb565>>(display: &mut D, set: &Setting
     rfill(display, 250, 166, 62, 22, 11, c_panel());          // track
     let knob_x = if set.dark { 292 } else { 252 };            // right=dark, left=light
     rfill(display, knob_x, 168, 18, 18, 9, if set.dark { c_claude() } else { c_dim() });
+
+    // ── Idle art ──
+    // Chips whose delay would never fire (>= the sleep timeout) render dim and
+    // are rejected by settings_touch, so the two settings cannot contradict.
+    #[cfg(not(feature = "eink"))]
+    {
+        txt(display, &FONT_7X13, "Idle art", 8, 200, Alignment::Left, c_fg());
+        let sel = mascot::ART_VALS.iter().position(|&v| v == set.art_sec).unwrap_or(0);
+        for i in 0..mascot::ART_VALS.len() {
+            let cx = 4 + (i as i32) * 78;
+            let on = i == sel;
+            let ok = mascot::art_is_valid(mascot::ART_VALS[i], set.sleep_min);
+            let chip_bg = if on { c_claude() } else { c_panel() };
+            rfill(display, cx, 206, 76, 30, 5, chip_bg);
+            let label_fg = if on { c_bg() } else if ok { c_dim() } else { c_panel() };
+            txt(display, &FONT_7X13, mascot::ART_LBL[i], cx + 38, 225,
+                Alignment::Center, label_fg);
+        }
+    }
 }
 
 // Map a touch on the Settings tab to a settings change. Returns true if changed.
@@ -691,12 +710,31 @@ fn settings_touch(sx: i32, sy: i32, set: &mut Settings) -> bool {
     if (114..=148).contains(&sy) && (4..=314).contains(&sx) {
         let i = (((sx - 4) / 62).clamp(0, 4)) as usize;
         let v = SLEEP_VALS[i];
-        if v != set.sleep_min { set.sleep_min = v; return true; }
+        if v != set.sleep_min {
+            set.sleep_min = v;
+            // A shorter sleep timeout can invalidate the stored art delay.
+            #[cfg(not(feature = "eink"))]
+            {
+                set.art_sec = mascot::snap_art(set.art_sec, v);
+            }
+            return true;
+        }
     }
     // Theme switch
     if (162..=190).contains(&sy) && (246..=316).contains(&sx) {
         set.dark = !set.dark;
         return true;
+    }
+    // Idle-art chips
+    #[cfg(not(feature = "eink"))]
+    if (206..=236).contains(&sy) && (4..=316).contains(&sx) {
+        let i = (((sx - 4) / 78).clamp(0, mascot::ART_VALS.len() as i32 - 1)) as usize;
+        let v = mascot::ART_VALS[i];
+        if mascot::art_is_valid(v, set.sleep_min) && v != set.art_sec {
+            set.art_sec = v;
+            return true;
+        }
+        return false;
     }
     false
 }
