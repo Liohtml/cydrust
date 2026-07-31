@@ -50,3 +50,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Host-side decoding of the firmware sprite blob (bridge/tests/firmware_sprite_test.rs).
+# Must match the firmware's embedded-graphics major version.
+embedded-graphics = "0.8"

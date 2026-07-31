@@ -51,6 +51,10 @@ mod proto;
 // bridge/tests/firmware_mascot_test.rs).
 #[cfg(not(feature = "eink"))]
 mod mascot;
+// RLE decoder for the pixel-art blob. embedded-graphics only, host-tested (see
+// bridge/tests/firmware_sprite_test.rs).
+#[cfg(not(feature = "eink"))]
+mod sprite;
 #[cfg(all(feature = "wifi", feature = "ota"))]
 mod ota;
 #[cfg(all(feature = "ble", not(feature = "wifi")))]
