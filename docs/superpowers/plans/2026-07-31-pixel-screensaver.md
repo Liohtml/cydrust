@@ -1299,9 +1299,14 @@ Append inside `render_settings`, after the Theme switch block (before the closin
             let cx = 4 + (i as i32) * 78;
             let on = i == sel;
             let ok = mascot::art_is_valid(mascot::ART_VALS[i], set.sleep_min);
-            let chip_bg = if on { c_claude() } else { c_panel() };
+            // Invalid chips drop their background to the page bg so they visually
+            // recede (no raised panel), while keeping a c_dim() label — that label
+            // colour has strong contrast against c_bg() in both palettes, unlike
+            // c_panel(), which is indistinguishable from itself as a label on a
+            // c_panel() background.
+            let chip_bg = if on { c_claude() } else if ok { c_panel() } else { c_bg() };
             rfill(display, cx, 206, 76, 30, 5, chip_bg);
-            let label_fg = if on { c_bg() } else if ok { c_dim() } else { c_panel() };
+            let label_fg = if on { c_bg() } else { c_dim() };
             txt(display, &FONT_7X13, mascot::ART_LBL[i], cx + 38, 225,
                 Alignment::Center, label_fg);
         }
