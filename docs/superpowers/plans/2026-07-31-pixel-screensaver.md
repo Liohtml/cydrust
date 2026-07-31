@@ -662,36 +662,8 @@ fn decoding_is_stable_across_calls() {
     assert_eq!(a, b);
 }
 
-/// Golden test (design doc section 8): pins the decoded artwork so a
-/// regenerated blob cannot silently change what the device draws.
-///
-/// To (re)generate after an INTENTIONAL artwork change, run this test, copy the
-/// printed values into GOLDEN, and say so in the commit message.
-#[test]
-fn frame_zero_of_each_mood_matches_its_golden_checksum() {
-    // Filled in from the first green run — see the doc comment above.
-    const GOLDEN: [u64; 5] = [0, 0, 0, 0, 0];
-
-    let s = Sprites::parse(BLOB).expect("parse");
-    let mut actual = [0u64; 5];
-    for (mood, slot) in actual.iter_mut().enumerate() {
-        // FNV-1a over the raw RGB565 values — stable, dependency-free.
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for c in s.frame(mood, 0, BG).unwrap() {
-            let raw: u16 = embedded_graphics::pixelcolor::raw::RawU16::from(c).into_inner();
-            for byte in raw.to_le_bytes() {
-                h ^= byte as u64;
-                h = h.wrapping_mul(0x100_0000_01b3);
-            }
-        }
-        *slot = h;
-    }
-
-    if GOLDEN == [0; 5] {
-        panic!("GOLDEN is unset — paste these values into the test:\n{actual:?}");
-    }
-    assert_eq!(actual, GOLDEN, "decoded artwork changed");
-}
+// NOTE: the golden-checksum test is added in Step 5, once the real values are
+// known. Do NOT commit a placeholder version of it — see Step 5.
 ```
 
 Note: `RawU16::from(c).into_inner()` needs `use embedded_graphics::prelude::RawData;`
@@ -852,15 +824,68 @@ Then add to `firmware/src/main.rs`, immediately after the `mod mascot;` block fr
 mod sprite;
 ```
 
-- [ ] **Step 5: Run tests, then fill in the golden values**
+- [ ] **Step 5: Run tests, then add the golden test with real values**
 
 Run: `cd bridge && cargo test --test firmware_sprite_test`
-Expected on the first run: 9 tests pass, and
-`frame_zero_of_each_mood_matches_its_golden_checksum` FAILS with
-`GOLDEN is unset — paste these values into the test: [...]`.
+Expected: PASS — 9 tests.
 
-Copy the five printed `u64` values into the `GOLDEN` constant, then re-run.
-Expected: PASS — 10 tests.
+Now add the golden test (design doc section 8). First compute the values by
+temporarily adding this test and running it:
+
+```rust
+#[test]
+fn print_goldens() {
+    let s = Sprites::parse(BLOB).expect("parse");
+    let mut out = [0u64; 5];
+    for (mood, slot) in out.iter_mut().enumerate() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;      // FNV-1a, dependency-free
+        for c in s.frame(mood, 0, BG).unwrap() {
+            let raw: u16 = embedded_graphics::pixelcolor::raw::RawU16::from(c).into_inner();
+            for byte in raw.to_le_bytes() {
+                h ^= byte as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        *slot = h;
+    }
+    println!("{out:?}");
+    panic!("scratch");
+}
+```
+
+Run `cargo test --test firmware_sprite_test print_goldens -- --nocapture`, note
+the five values, then **delete `print_goldens`** and replace it with the real
+test, substituting the values you captured for `<v0>`..`<v4>`:
+
+```rust
+/// Golden test (design doc section 8): pins the decoded artwork so a
+/// regenerated blob cannot silently change what the device draws.
+///
+/// After an INTENTIONAL artwork change these values will fail. Recompute them
+/// with the same FNV-1a fold, update them here, and say so in the commit message.
+#[test]
+fn frame_zero_of_each_mood_matches_its_golden_checksum() {
+    const GOLDEN: [u64; 5] = [<v0>, <v1>, <v2>, <v3>, <v4>];
+
+    let s = Sprites::parse(BLOB).expect("parse");
+    let mut actual = [0u64; 5];
+    for (mood, slot) in actual.iter_mut().enumerate() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for c in s.frame(mood, 0, BG).unwrap() {
+            let raw: u16 = embedded_graphics::pixelcolor::raw::RawU16::from(c).into_inner();
+            for byte in raw.to_le_bytes() {
+                h ^= byte as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        *slot = h;
+    }
+    assert_eq!(actual, GOLDEN, "decoded artwork changed");
+}
+```
+
+Re-run: `cd bridge && cargo test --test firmware_sprite_test`
+Expected: PASS — 10 tests. `print_goldens` must NOT appear in the commit.
 
 Then confirm Task 1 still passes: `cd bridge && cargo test --test firmware_mascot_test`
 
@@ -1565,13 +1590,26 @@ Add after the existing "Verify ELF output exists" step:
       # margin on every run and fail before an addition can silently overflow it.
       - name: Check app image fits the factory partition
         run: |
+          # esp-idf-sys emits an ELF; a .bin only exists if espflash ran. Prefer
+          # the .bin when present, else sum the flash-resident ELF sections.
+          # NB the toolchain binary is `xtensa-esp-elf-size` (esp-15.x), NOT
+          # `xtensa-esp32-elf-size` — the latter does not exist on the runner.
           BIN=$(find /tmp/fw-target/xtensa-esp32-espidf/release -maxdepth 1 -name '*.bin' | head -1)
-          if [ -z "$BIN" ]; then
-            ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
-            SIZE=$(xtensa-esp32-elf-size -A "$ELF" 2>/dev/null \
-                   | awk '/^\.flash|^\.rodata|^\.text|^\.dram|^\.iram/ {s+=$2} END {print s+0}')
-          else
+          if [ -n "$BIN" ]; then
             SIZE=$(stat -c%s "$BIN")
+          else
+            ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
+            SIZER=$(command -v xtensa-esp-elf-size || command -v xtensa-esp32-elf-size || true)
+            if [ -z "$SIZER" ]; then
+              echo "::warning::no esp size tool on PATH; falling back to ELF file size (overestimates)"
+              SIZE=$(stat -c%s "$ELF")
+            else
+              SIZE=$("$SIZER" -A "$ELF" \
+                     | awk '/^\.flash|^\.rodata|^\.text|^\.dram|^\.iram/ {s+=$2} END {print s+0}')
+            fi
+          fi
+          if [ -z "$SIZE" ] || [ "$SIZE" -le 0 ]; then
+            echo "::error::could not determine app image size"; exit 1
           fi
           # factory partition in the built-in single-app 4 MB layout
           LIMIT=$((1024 * 1024))
