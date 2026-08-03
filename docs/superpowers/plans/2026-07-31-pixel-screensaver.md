@@ -1648,25 +1648,40 @@ Add after the existing "Verify ELF output exists" step:
             echo "::error::measured app image size ($SIZE B) is implausibly small (< $PLAUSIBILITY_FLOOR_BYTES B) — the size guard is measuring the wrong thing, not a genuinely tiny firmware"
             exit 1
           fi
-          # factory partition in the built-in single-app 4 MB layout
-          LIMIT=$((1024 * 1024))
+          # Partition limit depends on which layout this matrix leg targets:
+          # usb/eink keep the built-in single-`factory` layout (1 MiB app
+          # partition); wifi-ota targets the dual-slot OTA layout defined in
+          # firmware/partitions_ota.csv, whose `ota_0` slot is 0x1A0000 =
+          # 1,703,936 B. This checks each build against its INTENDED layout;
+          # whether the OTA sdkconfig layer is actually applied at build time
+          # is tracked separately and is out of scope for this guard.
+          case "${{ matrix.name }}" in
+            wifi-ota)
+              LIMIT=1703936
+              LIMIT_DESC="ota_0 slot, partitions_ota.csv"
+              ;;
+            *)
+              LIMIT=1048576
+              LIMIT_DESC="factory partition"
+              ;;
+          esac
           MARGIN=$((LIMIT - SIZE))
-          echo "app image: $SIZE bytes, limit: $LIMIT, margin: $MARGIN"
+          echo "app image: $SIZE bytes, limit: $LIMIT B ($LIMIT_DESC), margin: $MARGIN"
           {
             echo "### Firmware size (${{ matrix.name }})"
             echo ""
-            echo "| metric | bytes |"
+            echo "| metric | value |"
             echo "| --- | ---: |"
-            echo "| app image | $SIZE |"
-            echo "| factory partition | $LIMIT |"
-            echo "| margin | $MARGIN |"
+            echo "| app image | $SIZE B |"
+            echo "| partition limit | $LIMIT B ($LIMIT_DESC) |"
+            echo "| margin | $MARGIN B |"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$SIZE" -ge "$LIMIT" ]; then
-            echo "::error::app image ($SIZE B) does not fit the factory partition ($LIMIT B)"
+            echo "::error::app image ($SIZE B) does not fit the $LIMIT_DESC ($LIMIT B)"
             exit 1
           fi
           if [ "$MARGIN" -lt 51200 ]; then
-            echo "::warning::only $MARGIN bytes of factory-partition headroom remain (<50 KB)"
+            echo "::warning::only $MARGIN bytes of $LIMIT_DESC headroom remain (<50 KB)"
           fi
 ```
 
