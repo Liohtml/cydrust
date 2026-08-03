@@ -27,6 +27,7 @@ jobs:
     outputs:
       bridge: ${{ steps.filter.outputs.bridge }}
       firmware: ${{ steps.filter.outputs.firmware }}
+      tools: ${{ steps.filter.outputs.tools }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -35,9 +36,22 @@ jobs:
           filters: |
             bridge:
               - 'bridge/**'
+              # The host test suite for firmware logic lives in bridge/tests/ but
+              # reaches into the firmware crate: #[path]-includes mascot.rs /
+              # proto.rs / sprite.rs and include_bytes!s the sprite blob. Without
+              # these two lines a firmware-only PR (e.g. an artwork refresh)
+              # skips all of them — including the golden-checksum test that is
+              # the ONLY guard that the committed blob decodes as intended.
+              - 'firmware/src/**'
+              - 'firmware/assets/**'
               - '.github/workflows/ci.yml'
             firmware:
               - 'firmware/**'
+              - '.github/workflows/ci.yml'
+            tools:
+              - 'tools/**'
+              - 'assets/gif/**'
+              - 'firmware/assets/**'
               - '.github/workflows/ci.yml'
 
   # ── Bridge: tests (Linux + Windows) ───────────────────────────────────────
@@ -147,6 +161,24 @@ jobs:
         with:
           name: bridge-coverage-lcov
           path: lcov.info
+
+  # ── Tools: GIF -> sprite converter tests (Python) ─────────────────────────
+  # Guards the MOODS <-> mascot::mood_index wire contract and the converter's
+  # determinism. Cheap (~1 min) and needs only Pillow.
+  tools-test:
+    name: Tools · Python tests
+    needs: changes
+    if: needs.changes.outputs.tools == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install Pillow
+        run: python3 -m pip install --upgrade Pillow
+      - name: Run converter tests
+        run: python3 tools/test_gif2sprite.py
 
   # ── Firmware: ESP32 build matrix (blocking) ───────────────────────────────
   # Every shipped feature combination must compile. BLE is known-broken on the
@@ -343,17 +375,18 @@ jobs:
   ci-gate:
     name: CI / all-green
     if: always()
-    needs: [changes, bridge-test, bridge-lint, firmware-build]
+    needs: [changes, bridge-test, bridge-lint, tools-test, firmware-build]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs passed
         run: |
           echo "bridge-test    = ${{ needs.bridge-test.result }}"
           echo "bridge-lint    = ${{ needs.bridge-lint.result }}"
+          echo "tools-test     = ${{ needs.tools-test.result }}"
           echo "firmware-build = ${{ needs.firmware-build.result }}"
           # A 'skipped' result means the area was untouched — that is a pass.
           # firmware-ble is allow-failure and excluded from the blocking set.
-          for r in "${{ needs.bridge-test.result }}" "${{ needs.bridge-lint.result }}" "${{ needs.firmware-build.result }}"; do
+          for r in "${{ needs.bridge-test.result }}" "${{ needs.bridge-lint.result }}" "${{ needs.tools-test.result }}" "${{ needs.firmware-build.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::A required CI job did not pass ($r)."
               exit 1
