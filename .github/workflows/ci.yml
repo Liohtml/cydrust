@@ -208,6 +208,52 @@ jobs:
         run: |
           ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
           if [ -f "$ELF" ]; then ls -lh "$ELF"; else echo "ERROR: ELF not found"; exit 1; fi
+      # The pixel-art blob adds ~81 KB. The default build targets the built-in
+      # single-`factory` layout (1 MiB app partition), so record the real
+      # margin on every run and fail before an addition can silently overflow it.
+      - name: Check app image fits the factory partition
+        run: |
+          # esp-idf-sys emits an ELF; a .bin only exists if espflash ran. Prefer
+          # the .bin when present, else sum the flash-resident ELF sections.
+          # NB the toolchain binary is `xtensa-esp-elf-size` (esp-15.x), NOT
+          # `xtensa-esp32-elf-size` — the latter does not exist on the runner.
+          BIN=$(find /tmp/fw-target/xtensa-esp32-espidf/release -maxdepth 1 -name '*.bin' | head -1)
+          if [ -n "$BIN" ]; then
+            SIZE=$(stat -c%s "$BIN")
+          else
+            ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
+            SIZER=$(command -v xtensa-esp-elf-size || command -v xtensa-esp32-elf-size || true)
+            if [ -z "$SIZER" ]; then
+              echo "::warning::no esp size tool on PATH; falling back to ELF file size (overestimates)"
+              SIZE=$(stat -c%s "$ELF")
+            else
+              SIZE=$("$SIZER" -A "$ELF" \
+                     | awk '/^\.flash|^\.rodata|^\.text|^\.dram|^\.iram/ {s+=$2} END {print s+0}')
+            fi
+          fi
+          if [ -z "$SIZE" ] || [ "$SIZE" -le 0 ]; then
+            echo "::error::could not determine app image size"; exit 1
+          fi
+          # factory partition in the built-in single-app 4 MB layout
+          LIMIT=$((1024 * 1024))
+          MARGIN=$((LIMIT - SIZE))
+          echo "app image: $SIZE bytes, limit: $LIMIT, margin: $MARGIN"
+          {
+            echo "### Firmware size (${{ matrix.name }})"
+            echo ""
+            echo "| metric | bytes |"
+            echo "| --- | ---: |"
+            echo "| app image | $SIZE |"
+            echo "| factory partition | $LIMIT |"
+            echo "| margin | $MARGIN |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SIZE" -ge "$LIMIT" ]; then
+            echo "::error::app image ($SIZE B) does not fit the factory partition ($LIMIT B)"
+            exit 1
+          fi
+          if [ "$MARGIN" -lt 51200 ]; then
+            echo "::warning::only $MARGIN bytes of factory-partition headroom remain (<50 KB)"
+          fi
 
   # ── Firmware: BLE build (allow-failure — blocked on esp-idf-svc 0.51) ─────
   firmware-ble:
