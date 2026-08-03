@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-03
+
+### Added
+- **Firmware** — Pixel-art screensaver: a fifth **PIXEL** tab shows an animated mascot whose animation reflects agent activity (`sleeping` when offline/idle, `happy` when a session is waiting, `juggling` for 2+ working, `building` for one working-but-quiet session, `typing` for one working). Checked top-down, first match wins — an offline bridge short-circuits to `sleeping` so stale data never claims a session needs you
+- **Firmware** — The art also auto-engages as a full-screen screensaver after a configurable idle period; any touch dismisses it and returns to the previous tab. The idle timer is a separate clock from the sleep timeout, so a waiting session can still surface `happy`
+- **Firmware** — Settings gain an **Idle art** row (`Off` / `30s` / `1m` / `5m`); values that could never fire before the screen blanks (`Sleep after`) render unavailable and cannot be selected. Persisted in NVS. The e-ink build does not gain the feature
+- **Firmware** — `mascot.rs` (activity→animation mapping) and `sprite.rs` (RLE blob decoder), both std/embedded-graphics-only so 38 host tests run on plain stable without an ESP32 toolchain; plus `tools/gif2sprite.py` (committed asset pipeline) with its own tests
+- **CI** — App-image size guard: measures each firmware build against its intended flash partition and fails on overflow (default USB build: 665,713 B against a 1 MiB factory partition, ~382 KB headroom). A new `tools-test` job runs the converter tests
+
+### Changed
+- **CI** — The `bridge` change-filter now also triggers on `firmware/src/**` and `firmware/assets/**`, so a firmware-only change (e.g. an artwork refresh) still runs the host tests that `#[path]`-include the firmware sources
+- README documents the screensaver with the five animations; artwork adapted from [KebeliSamet0/clawd](https://github.com/KebeliSamet0/clawd) (MIT, see `assets/gif/NOTICE`)
+- Banner refreshed to v0.4.0
+
+### Fixed
+- **CI** — BLE build reported a permanent red check despite being non-blocking (`continue-on-error` moved from job to step level); layered `sdkconfig` now passed as absolute paths so the intended layer actually reaches the IDF build
+
 ## [0.3.0] - 2026-07-30
 
 ### Added
