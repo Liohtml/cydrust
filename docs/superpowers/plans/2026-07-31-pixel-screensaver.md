@@ -1595,26 +1595,58 @@ Add after the existing "Verify ELF output exists" step:
       # margin on every run and fail before an addition can silently overflow it.
       - name: Check app image fits the factory partition
         run: |
-          # esp-idf-sys emits an ELF; a .bin only exists if espflash ran. Prefer
-          # the .bin when present, else sum the flash-resident ELF sections.
+          # Measure the flash-resident sections of the app ELF directly. A
+          # stray `.bin` (e.g. a partition-table binary) is NOT used here: an
+          # earlier version of this step preferred any `.bin` it found, which
+          # silently measured the wrong file and reported a fake, identical
+          # size across every matrix leg. The ELF at this path is reliable.
           # NB the toolchain binary is `xtensa-esp-elf-size` (esp-15.x), NOT
           # `xtensa-esp32-elf-size` — the latter does not exist on the runner.
-          BIN=$(find /tmp/fw-target/xtensa-esp32-espidf/release -maxdepth 1 -name '*.bin' | head -1)
-          if [ -n "$BIN" ]; then
-            SIZE=$(stat -c%s "$BIN")
+          ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
+          SIZER=$(command -v xtensa-esp-elf-size || command -v xtensa-esp32-elf-size || true)
+          if [ -z "$SIZER" ]; then
+            echo "::warning::no esp size tool on PATH; falling back to ELF file size (overestimates)"
+            SIZE=$(stat -c%s "$ELF" 2>/dev/null || echo "")
           else
-            ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
-            SIZER=$(command -v xtensa-esp-elf-size || command -v xtensa-esp32-elf-size || true)
-            if [ -z "$SIZER" ]; then
-              echo "::warning::no esp size tool on PATH; falling back to ELF file size (overestimates)"
-              SIZE=$(stat -c%s "$ELF")
-            else
-              SIZE=$("$SIZER" -A "$ELF" \
-                     | awk '/^\.flash|^\.rodata|^\.text|^\.dram|^\.iram/ {s+=$2} END {print s+0}')
-            fi
+            SIZER_OUTPUT=$("$SIZER" -A "$ELF" 2>&1 || true)
+            echo "----- $SIZER -A $ELF -----"
+            echo "$SIZER_OUTPUT"
+            echo "---------------------------------------------------------"
+            {
+              echo "<details><summary>Raw <code>$(basename "$SIZER") -A</code> output (${{ matrix.name }})</summary>"
+              echo ""
+              echo '```'
+              echo "$SIZER_OUTPUT"
+              echo '```'
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Sum every loaded section (nonzero address) that isn't a
+            # zero-initialized RAM section (bss/noinit never occupies space
+            # in the flashed image). This is deliberately not a hardcoded
+            # list of esp-idf section-name prefixes — the raw table printed
+            # above is what makes this arithmetic auditable, not a regex.
+            SIZE=$(echo "$SIZER_OUTPUT" | awk '
+              $1 ~ /^\./ && $2 ~ /^[0-9]+$/ {
+                name = tolower($1); sz = $2 + 0; addr = $3 + 0
+                if (name ~ /bss|noinit/) next
+                if (addr == 0) next
+                s += sz
+              }
+              END { print s+0 }
+            ')
           fi
           if [ -z "$SIZE" ] || [ "$SIZE" -le 0 ]; then
             echo "::error::could not determine app image size"; exit 1
+          fi
+          # A real firmware image embedding the ~82 KB pixel-art asset cannot
+          # be anywhere near this small. Landing here means the measurement
+          # itself is broken (wrong file, wrong tool, wrong sections) — a
+          # guard that can't detect its own misconfiguration is worthless,
+          # so fail loudly instead of reporting a fictitious margin.
+          PLAUSIBILITY_FLOOR_BYTES=204800
+          if [ "$SIZE" -lt "$PLAUSIBILITY_FLOOR_BYTES" ]; then
+            echo "::error::measured app image size ($SIZE B) is implausibly small (< $PLAUSIBILITY_FLOOR_BYTES B) — the size guard is measuring the wrong thing, not a genuinely tiny firmware"
+            exit 1
           fi
           # factory partition in the built-in single-app 4 MB layout
           LIMIT=$((1024 * 1024))
