@@ -123,6 +123,72 @@ fn snap_sleep(m: u16) -> u16 {
     *SLEEP_VALS.iter().min_by_key(|&&v| (v as i32 - m as i32).abs()).unwrap_or(&0)
 }
 
+// Screensaver state, shared verbatim by both transport loops.
+//
+// NB: `last_input` is deliberately NOT the loops' `last_touch`. That one is
+// also reset whenever a session is Waiting (so the screen stays awake for you),
+// which would stop the art from ever auto-engaging while anything waits — and
+// Waiting is exactly what drives the Happy animation.
+#[cfg(not(feature = "eink"))]
+struct ArtState {
+    last_input:  Instant,
+    engaged:     bool,
+    frame:       usize,
+    last_advance: Instant,
+}
+
+#[cfg(not(feature = "eink"))]
+const ART_FRAME_MS: u64 = 125; // 8 fps
+
+#[cfg(not(feature = "eink"))]
+impl ArtState {
+    fn new() -> Self {
+        ArtState {
+            last_input: Instant::now(),
+            engaged: false,
+            frame: 0,
+            last_advance: Instant::now(),
+        }
+    }
+
+    /// Called on every touch: dismisses the screensaver and restarts the clock.
+    /// Returns true if a touch was consumed by dismissing (caller must then NOT
+    /// route it as a tab / card tap).
+    fn wake(&mut self) -> bool {
+        self.last_input = Instant::now();
+        if self.engaged {
+            self.engaged = false;
+            self.frame = 0;
+            return true;
+        }
+        false
+    }
+
+    /// Advance the clock. Returns true if the display needs repainting.
+    fn tick(&mut self, art_sec: u16, mood_changed: bool) -> bool {
+        if art_sec > 0
+            && !self.engaged
+            && self.last_input.elapsed() >= std::time::Duration::from_secs(art_sec as u64)
+        {
+            self.engaged = true;
+            self.frame = 0;
+            self.last_advance = Instant::now();
+            return true;
+        }
+        if mood_changed {
+            self.frame = 0;              // a mood change reads as a fresh start
+            self.last_advance = Instant::now();
+            return true;
+        }
+        if self.last_advance.elapsed() >= std::time::Duration::from_millis(ART_FRAME_MS) {
+            self.last_advance = Instant::now();
+            self.frame = self.frame.wrapping_add(1);
+            return true;
+        }
+        false
+    }
+}
+
 // ── JSON parsing ─────────────────────────────────────────────────────────────
 //
 // The `/state` mini-JSON scanner (`parse_state`) lives in `proto` — see that
@@ -1041,6 +1107,10 @@ fn run() -> Result<()> {
         let mut last_touch  = Instant::now();
         let mut sleeping    = false;
         let mut prev: Option<(DisplayState, Tab, View, Settings)> = None;
+        #[cfg(not(feature = "eink"))]
+        let mut art = ArtState::new();
+        #[cfg(not(feature = "eink"))]
+        let mut last_mood = mascot::mood_for(&ds);
         loop {
             if last_poll.elapsed() >= std::time::Duration::from_millis(POLL_MS) {
                 last_poll = Instant::now();
@@ -1061,6 +1131,11 @@ fn run() -> Result<()> {
                 if sleeping {
                     sleeping = false;
                     set_brightness(&mut bl, settings.brightness);
+                    prev = None;
+                    art.wake();
+                } else if art.wake() {
+                    // Touch dismissed the screensaver — consume it so waking the
+                    // device never also switches tabs or opens a session card.
                     prev = None;
                 } else if sy < 34 {
                     active_tab = tab_at(sx);
@@ -1094,6 +1169,20 @@ fn run() -> Result<()> {
             }
 
             if !sleeping {
+                #[cfg(not(feature = "eink"))]
+                let mood = mascot::mood_for(&ds);
+                #[cfg(not(feature = "eink"))]
+                let mood_changed = mood != last_mood;
+                #[cfg(not(feature = "eink"))]
+                { last_mood = mood; }
+
+                #[cfg(not(feature = "eink"))]
+                let showing_art = art.engaged || active_tab == Tab::Pixel;
+                #[cfg(not(feature = "eink"))]
+                let art_dirty = art.tick(settings.art_sec, mood_changed) && showing_art;
+                #[cfg(feature = "eink")]
+                let art_dirty = false;
+
                 let layout_changed = prev.as_ref()
                     .map(|p| p.1 != active_tab || p.2 != view).unwrap_or(true);
                 let content_changed = prev.as_ref().map(|p| match active_tab {
@@ -1101,11 +1190,30 @@ fn run() -> Result<()> {
                     Tab::Metrics  => p.0.metrics != ds.metrics,
                     _             => p.0 != ds,
                 }).unwrap_or(true);
-                if layout_changed || content_changed {
-                    render(&mut display, &ds, active_tab, view, &settings, layout_changed, 0, false);
-                    prev = Some((ds.clone(), active_tab, view, settings));
+
+                if layout_changed || content_changed || art_dirty {
+                    #[cfg(not(feature = "eink"))]
+                    let (tab_to_draw, frame_idx, full_screen) = if art.engaged {
+                        (Tab::Pixel, art.frame, true)
+                    } else {
+                        (active_tab, art.frame, false)
+                    };
+                    #[cfg(feature = "eink")]
+                    let (tab_to_draw, frame_idx, full_screen) = (active_tab, 0usize, false);
+
+                    // Engaging/leaving the screensaver changes layout identity,
+                    // so force a full clear on that transition.
+                    let clear = layout_changed
+                        || prev.as_ref().map(|p| p.1 != tab_to_draw).unwrap_or(true);
+
+                    render(&mut display, &ds, tab_to_draw, view, &settings,
+                           clear, frame_idx, full_screen);
+                    prev = Some((ds.clone(), tab_to_draw, view, settings));
                 }
             }
+            // 50 ms poll: art frames land on ~150 ms (≈6.7 fps) rather than the
+            // nominal 125 ms. Deliberate — a tighter loop costs touch-poll CPU
+            // for an imperceptible smoothness gain.
             FreeRtos::delay_ms(50);
         }
     }
@@ -1188,6 +1296,10 @@ fn run() -> Result<()> {
         let mut last_touch  = Instant::now();
         let mut sleeping    = false;
         let mut prev: Option<(DisplayState, Tab, View, Settings)> = None;
+        #[cfg(not(feature = "eink"))]
+        let mut art = ArtState::new();
+        #[cfg(not(feature = "eink"))]
+        let mut last_mood = mascot::mood_for(&DisplayState::default());
 
         loop {
             // Current state first, so touch handling can hit-test sessions.
@@ -1210,6 +1322,11 @@ fn run() -> Result<()> {
                 if sleeping {
                     sleeping = false;
                     set_brightness(&mut bl, settings.brightness);
+                    prev = None;
+                    art.wake();
+                } else if art.wake() {
+                    // Touch dismissed the screensaver — consume it so waking the
+                    // device never also switches tabs or opens a session card.
                     prev = None;
                 } else if sy < 34 {
                     active_tab = tab_at(sx);
@@ -1245,6 +1362,20 @@ fn run() -> Result<()> {
             }
 
             if !sleeping {
+                #[cfg(not(feature = "eink"))]
+                let mood = mascot::mood_for(&state);
+                #[cfg(not(feature = "eink"))]
+                let mood_changed = mood != last_mood;
+                #[cfg(not(feature = "eink"))]
+                { last_mood = mood; }
+
+                #[cfg(not(feature = "eink"))]
+                let showing_art = art.engaged || active_tab == Tab::Pixel;
+                #[cfg(not(feature = "eink"))]
+                let art_dirty = art.tick(settings.art_sec, mood_changed) && showing_art;
+                #[cfg(feature = "eink")]
+                let art_dirty = false;
+
                 let layout_changed = prev.as_ref()
                     .map(|p| p.1 != active_tab || p.2 != view).unwrap_or(true);
                 let content_changed = prev.as_ref().map(|p| match active_tab {
@@ -1252,11 +1383,30 @@ fn run() -> Result<()> {
                     Tab::Metrics  => p.0.metrics != state.metrics,
                     _             => p.0 != state,
                 }).unwrap_or(true);
-                if layout_changed || content_changed {
-                    render(&mut display, &state, active_tab, view, &settings, layout_changed, 0, false);
-                    prev = Some((state, active_tab, view, settings));
+
+                if layout_changed || content_changed || art_dirty {
+                    #[cfg(not(feature = "eink"))]
+                    let (tab_to_draw, frame_idx, full_screen) = if art.engaged {
+                        (Tab::Pixel, art.frame, true)
+                    } else {
+                        (active_tab, art.frame, false)
+                    };
+                    #[cfg(feature = "eink")]
+                    let (tab_to_draw, frame_idx, full_screen) = (active_tab, 0usize, false);
+
+                    // Engaging/leaving the screensaver changes layout identity,
+                    // so force a full clear on that transition.
+                    let clear = layout_changed
+                        || prev.as_ref().map(|p| p.1 != tab_to_draw).unwrap_or(true);
+
+                    render(&mut display, &state, tab_to_draw, view, &settings,
+                           clear, frame_idx, full_screen);
+                    prev = Some((state, tab_to_draw, view, settings));
                 }
             }
+            // 50 ms poll: art frames land on ~150 ms (≈6.7 fps) rather than the
+            // nominal 125 ms. Deliberate — a tighter loop costs touch-poll CPU
+            // for an imperceptible smoothness gain.
             FreeRtos::delay_ms(50);
         }
         } // end colour-LCD render loop block (cfg(not(eink)))
