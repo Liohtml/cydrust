@@ -1,0 +1,9 @@
+The clawd-*.gif pixel-art animations in this directory are taken from:
+
+    https://github.com/KebeliSamet0/clawd
+
+Copyright (c) KebeliSamet0, licensed under the MIT License.
+
+They are redistributed here unmodified so this repository is self-contained.
+firmware/assets/sprites.bin is a derived work: downscaled to 128x128, reduced
+to 16 frames, and quantized to a shared 16-colour palette by tools/gif2sprite.py.

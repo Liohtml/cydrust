@@ -47,6 +47,14 @@ mod icons;
 // Pure protocol/formatting logic (no esp-idf deps) — shared with the host test
 // suite via `#[path]` (see bridge/tests/firmware_proto_test.rs).
 mod proto;
+// Activity -> animation mapping for the pixel tab. Std-only, host-tested (see
+// bridge/tests/firmware_mascot_test.rs).
+#[cfg(not(feature = "eink"))]
+mod mascot;
+// RLE decoder for the pixel-art blob. embedded-graphics only, host-tested (see
+// bridge/tests/firmware_sprite_test.rs).
+#[cfg(not(feature = "eink"))]
+mod sprite;
 #[cfg(all(feature = "wifi", feature = "ota"))]
 mod ota;
 #[cfg(all(feature = "ble", not(feature = "wifi")))]
@@ -65,7 +73,14 @@ compile_error!("`eink` is a USB-transport display variant and is mutually exclus
 // ── Data model ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Tab { Sessions, Usage, Metrics, Settings }
+enum Tab {
+    Sessions,
+    Usage,
+    Metrics,
+    #[cfg(not(feature = "eink"))]
+    Pixel,
+    Settings,
+}
 
 // Sessions tab can show the list or a single-session detail overlay.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,9 +101,19 @@ struct Settings {
     brightness: u8,    // 10..=100 (%)
     sleep_min:  u16,   // 0=never, else minutes until screen-off
     dark:       bool,  // theme: true=dark, false=light
+    #[cfg(not(feature = "eink"))]
+    art_sec:    u16,   // 0=off, else seconds idle before the pixel art engages
 }
 impl Default for Settings {
-    fn default() -> Self { Settings { brightness: 100, sleep_min: 0, dark: true } }
+    fn default() -> Self {
+        Settings {
+            brightness: 100,
+            sleep_min: 0,
+            dark: true,
+            #[cfg(not(feature = "eink"))]
+            art_sec: 60,
+        }
+    }
 }
 
 const SLEEP_VALS: [u16; 5] = [0, 1, 5, 15, 30];
@@ -96,6 +121,72 @@ const SLEEP_LBL:  [&str; 5] = ["Never", "1m", "5m", "15m", "30m"];
 
 fn snap_sleep(m: u16) -> u16 {
     *SLEEP_VALS.iter().min_by_key(|&&v| (v as i32 - m as i32).abs()).unwrap_or(&0)
+}
+
+// Screensaver state, shared verbatim by both transport loops.
+//
+// NB: `last_input` is deliberately NOT the loops' `last_touch`. That one is
+// also reset whenever a session is Waiting (so the screen stays awake for you),
+// which would stop the art from ever auto-engaging while anything waits — and
+// Waiting is exactly what drives the Happy animation.
+#[cfg(not(feature = "eink"))]
+struct ArtState {
+    last_input:  Instant,
+    engaged:     bool,
+    frame:       usize,
+    last_advance: Instant,
+}
+
+#[cfg(not(feature = "eink"))]
+const ART_FRAME_MS: u64 = 125; // 8 fps
+
+#[cfg(not(feature = "eink"))]
+impl ArtState {
+    fn new() -> Self {
+        ArtState {
+            last_input: Instant::now(),
+            engaged: false,
+            frame: 0,
+            last_advance: Instant::now(),
+        }
+    }
+
+    /// Called on every touch: dismisses the screensaver and restarts the clock.
+    /// Returns true if a touch was consumed by dismissing (caller must then NOT
+    /// route it as a tab / card tap).
+    fn wake(&mut self) -> bool {
+        self.last_input = Instant::now();
+        if self.engaged {
+            self.engaged = false;
+            self.frame = 0;
+            return true;
+        }
+        false
+    }
+
+    /// Advance the clock. Returns true if the display needs repainting.
+    fn tick(&mut self, art_sec: u16, mood_changed: bool) -> bool {
+        if art_sec > 0
+            && !self.engaged
+            && self.last_input.elapsed() >= std::time::Duration::from_secs(art_sec as u64)
+        {
+            self.engaged = true;
+            self.frame = 0;
+            self.last_advance = Instant::now();
+            return true;
+        }
+        if mood_changed {
+            self.frame = 0;              // a mood change reads as a fresh start
+            self.last_advance = Instant::now();
+            return true;
+        }
+        if self.last_advance.elapsed() >= std::time::Duration::from_millis(ART_FRAME_MS) {
+            self.last_advance = Instant::now();
+            self.frame = self.frame.wrapping_add(1);
+            return true;
+        }
+        false
+    }
 }
 
 // ── JSON parsing ─────────────────────────────────────────────────────────────
@@ -226,22 +317,87 @@ fn provider_meta(tool: &str) -> (&'static str, Rgb565) {
     }
 }
 
+// ── Sprite blob ───────────────────────────────────────────────────────────────
+
+// The blob is validated ONCE (first use, i.e. the first painted frame) instead
+// of on every painted frame: `Sprites` is a ~672 B value whose construction
+// includes an 80-entry bounds-check loop, and it is derived from a
+// compile-time-embedded constant, so re-deriving it per frame is pure waste.
+//
+// Spec §7: if validation fails the PIXEL tab is OMITTED (4-tab layout, no
+// auto-engage) rather than showing a permanently empty body — see `tab_list`.
+// `OnceLock` (not `static mut`) keeps this sound without unsafe.
+#[cfg(not(feature = "eink"))]
+static SPRITES: std::sync::OnceLock<Option<sprite::Sprites<'static>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(not(feature = "eink"))]
+fn sprites() -> Option<&'static sprite::Sprites<'static>> {
+    SPRITES.get_or_init(|| sprite::Sprites::parse(sprite::BLOB)).as_ref()
+}
+
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 
-fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(d: &mut D, active: Tab) {
-    let tabs: &[(&str, i32, u32, Tab)] = &[
-        ("SESSIONS", 40,  79, Tab::Sessions),
-        ("USAGE",    120, 79, Tab::Usage),
-        ("METRICS",  200, 79, Tab::Metrics),
-        ("SETTINGS", 280, 79, Tab::Settings),
+// SINGLE SOURCE OF TRUTH for the tab bar. `draw_tab_bar` (painting) and
+// `tab_at` (hit-testing) both derive their count *and* stride from this list,
+// so a layout change cannot make the two disagree — a one-pixel mismatch would
+// route touches to the wrong tab.
+//
+// 320 px / 5 tabs = 62 px each (1 px gutters). Labels are shortened to fit
+// FONT_7X13_BOLD inside them. If the sprite blob is invalid the PIXEL tab drops
+// out and the four remaining tabs get the roomier 78 px cells (and the long
+// labels) — the same geometry the e-ink build uses.
+#[cfg(not(feature = "eink"))]
+fn tab_list() -> &'static [(&'static str, Tab)] {
+    static WITH_PIXEL: [(&str, Tab); 5] = [
+        ("SESS",   Tab::Sessions),
+        ("USAGE",  Tab::Usage),
+        ("METRIC", Tab::Metrics),
+        ("PIXEL",  Tab::Pixel),
+        ("SET",    Tab::Settings),
     ];
+    static NO_PIXEL: [(&str, Tab); 4] = [
+        ("SESSIONS", Tab::Sessions),
+        ("USAGE",    Tab::Usage),
+        ("METRICS",  Tab::Metrics),
+        ("SETTINGS", Tab::Settings),
+    ];
+    if sprites().is_some() { &WITH_PIXEL } else { &NO_PIXEL }
+}
+
+#[cfg(feature = "eink")]
+fn tab_list() -> &'static [(&'static str, Tab)] {
+    static TABS: [(&str, Tab); 4] = [
+        ("SESSIONS", Tab::Sessions),
+        ("USAGE",    Tab::Usage),
+        ("METRICS",  Tab::Metrics),
+        ("SETTINGS", Tab::Settings),
+    ];
+    &TABS
+}
+
+fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(d: &mut D, active: Tab) {
+    let tabs = tab_list();
+
+    let n = tabs.len() as i32;
+    let w = (320 - (n + 1)) / n;         // 5 tabs -> 62 px; 4 tabs -> 78 px
     let mut x = 1i32;
-    for (label, cx, w, tab) in tabs {
+    for (label, tab) in tabs {
         let (bg, fg) = if *tab == active { (c_claude(), c_bg()) } else { (c_panel(), c_dim()) };
-        rfill(d, x, 1, *w, 24, 5, bg);
-        txt(d, &FONT_7X13_BOLD, label, *cx, 17, Alignment::Center, fg);
-        x += *w as i32 + 1;
+        rfill(d, x, 1, w as u32, 24, 5, bg);
+        txt(d, &FONT_7X13_BOLD, label, x + w / 2, 17, Alignment::Center, fg);
+        x += w + 1;
     }
+}
+
+// Screen-x -> Tab. Inverts draw_tab_bar's geometry from the SAME `tab_list()`,
+// so the two cannot drift apart in either the 5-tab or the 4-tab layout.
+fn tab_at(sx: i32) -> Tab {
+    let tabs = tab_list();
+    let n = tabs.len() as i32;
+    let w = (320 - (n + 1)) / n;
+    let i = ((sx - 1) / (w + 1)).clamp(0, n - 1) as usize;
+    tabs[i].1
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
@@ -257,10 +413,14 @@ fn draw_tab_bar<D: DrawTarget<Color = Rgb565>>(d: &mut D, active: Tab) {
 // plain data refresh it is false and each element repaints over its own region,
 // so the screen never blanks ("background" refresh — no flicker).
 fn render<D: DrawTarget<Color = Rgb565>>(
-    display: &mut D, ds: &DisplayState, active: Tab, view: View, set: &Settings, full_clear: bool,
+    display: &mut D, ds: &DisplayState, active: Tab, view: View, set: &Settings,
+    full_clear: bool, frame_idx: usize, full_screen: bool,
 ) {
+    #[cfg(feature = "eink")]
+    let _ = (frame_idx, full_screen);
+
     if full_clear { fill(display, 0, 0, 320, 240, c_bg()); }
-    draw_tab_bar(display, active);
+    if !full_screen { draw_tab_bar(display, active); }
 
     match active {
         Tab::Sessions => match view {
@@ -272,8 +432,43 @@ fn render<D: DrawTarget<Color = Rgb565>>(
         },
         Tab::Usage    => render_usage(display, ds),
         Tab::Metrics  => render_metrics(display, &ds.metrics),
+        #[cfg(not(feature = "eink"))]
+        Tab::Pixel    => render_pixel(display, ds, frame_idx, full_screen),
         Tab::Settings => render_settings(display, set),
     }
+}
+
+// Pixel-art mascot. `full_screen` hides the tab bar (auto-engaged screensaver
+// mode); otherwise the sprite sits below the 26 px bar.
+#[cfg(not(feature = "eink"))]
+fn render_pixel<D: DrawTarget<Color = Rgb565>>(
+    display: &mut D, ds: &DisplayState, frame_idx: usize, full_screen: bool,
+) {
+    // `Rectangle`, `Point` and `Size` are already in scope from main.rs's
+    // top-level imports — do not re-import, clippy denies that.
+    //
+    // No body fill here: `render` has already wiped the whole panel whenever
+    // `full_clear` was set, and every frame paints its full 128x128 rect
+    // (background pixels included), so it can never leave a ghost behind.
+
+    // Unreachable when the blob is invalid — `tab_list` then omits the PIXEL
+    // tab and the art never engages — but stay defensive rather than panicking.
+    let Some(sprites) = sprites() else { return };
+    let mood = mascot::mood_for(ds);
+    let Some(px) = sprites.frame(
+        mascot::mood_index(mood),
+        frame_idx % sprite::FRAMES,
+        c_bg(),
+    ) else { return };
+
+    // Centred in the 214 px band below the 26 px tab bar ((214-128)/2 + 26),
+    // or in the whole 240 px panel ((240-128)/2) when the bar is hidden.
+    let y = if full_screen { 56 } else { 69 };
+    let area = Rectangle::new(
+        Point::new(96, y),
+        Size::new(sprite::SPRITE_W, sprite::SPRITE_H),
+    );
+    let _ = display.fill_contiguous(&area, px);
 }
 
 fn render_metrics<D: DrawTarget<Color = Rgb565>>(display: &mut D, m: &Metrics) {
@@ -592,6 +787,30 @@ fn render_settings<D: DrawTarget<Color = Rgb565>>(display: &mut D, set: &Setting
     rfill(display, 250, 166, 62, 22, 11, c_panel());          // track
     let knob_x = if set.dark { 292 } else { 252 };            // right=dark, left=light
     rfill(display, knob_x, 168, 18, 18, 9, if set.dark { c_claude() } else { c_dim() });
+
+    // ── Idle art ──
+    // Chips whose delay would never fire (>= the sleep timeout) render dim and
+    // are rejected by settings_touch, so the two settings cannot contradict.
+    #[cfg(not(feature = "eink"))]
+    {
+        txt(display, &FONT_7X13, "Idle art", 8, 200, Alignment::Left, c_fg());
+        let sel = mascot::ART_VALS.iter().position(|&v| v == set.art_sec).unwrap_or(0);
+        for i in 0..mascot::ART_VALS.len() {
+            let cx = 4 + (i as i32) * 78;
+            let on = i == sel;
+            let ok = mascot::art_is_valid(mascot::ART_VALS[i], set.sleep_min);
+            // Invalid chips drop their background to the page bg so they visually
+            // recede (no raised panel), while keeping a c_dim() label — that label
+            // colour has strong contrast against c_bg() in both palettes, unlike
+            // c_panel(), which is indistinguishable from itself as a label on a
+            // c_panel() background.
+            let chip_bg = if on { c_claude() } else if ok { c_panel() } else { c_bg() };
+            rfill(display, cx, 206, 76, 30, 5, chip_bg);
+            let label_fg = if on { c_bg() } else { c_dim() };
+            txt(display, &FONT_7X13, mascot::ART_LBL[i], cx + 38, 225,
+                Alignment::Center, label_fg);
+        }
+    }
 }
 
 // Map a touch on the Settings tab to a settings change. Returns true if changed.
@@ -607,12 +826,31 @@ fn settings_touch(sx: i32, sy: i32, set: &mut Settings) -> bool {
     if (114..=148).contains(&sy) && (4..=314).contains(&sx) {
         let i = (((sx - 4) / 62).clamp(0, 4)) as usize;
         let v = SLEEP_VALS[i];
-        if v != set.sleep_min { set.sleep_min = v; return true; }
+        if v != set.sleep_min {
+            set.sleep_min = v;
+            // A shorter sleep timeout can invalidate the stored art delay.
+            #[cfg(not(feature = "eink"))]
+            {
+                set.art_sec = mascot::snap_art(set.art_sec, v);
+            }
+            return true;
+        }
     }
     // Theme switch
     if (162..=190).contains(&sy) && (246..=316).contains(&sx) {
         set.dark = !set.dark;
         return true;
+    }
+    // Idle-art chips
+    #[cfg(not(feature = "eink"))]
+    if (206..=236).contains(&sy) && (4..=316).contains(&sx) {
+        let i = (((sx - 4) / 78).clamp(0, mascot::ART_VALS.len() as i32 - 1)) as usize;
+        let v = mascot::ART_VALS[i];
+        if mascot::art_is_valid(v, set.sleep_min) && v != set.art_sec {
+            set.art_sec = v;
+            return true;
+        }
+        return false;
     }
     false
 }
@@ -699,13 +937,23 @@ fn settings_load(nvs: &EspNvs<NvsDefault>) -> Settings {
     let sleep_min  = snap_sleep(nvs.get_u16("sleep").ok().flatten().unwrap_or(0));
     let dark       = nvs.get_u8("dark").ok().flatten().unwrap_or(1) != 0;
     DARK.store(dark, Ordering::Relaxed);
-    Settings { brightness, sleep_min, dark }
+    #[cfg(not(feature = "eink"))]
+    let art_sec = mascot::snap_art(nvs.get_u16("art").ok().flatten().unwrap_or(60), sleep_min);
+    Settings {
+        brightness,
+        sleep_min,
+        dark,
+        #[cfg(not(feature = "eink"))]
+        art_sec,
+    }
 }
 
 fn settings_save(nvs: &mut EspNvs<NvsDefault>, s: &Settings) {
     let _ = nvs.set_u8("bright", s.brightness);
     let _ = nvs.set_u16("sleep", s.sleep_min);
     let _ = nvs.set_u8("dark", s.dark as u8);
+    #[cfg(not(feature = "eink"))]
+    let _ = nvs.set_u16("art", s.art_sec);
 }
 
 // Acknowledge a waiting session. USB: emit a clean `{"ack":"<id>"}` line that the
@@ -904,6 +1152,22 @@ fn run() -> Result<()> {
         let mut last_touch  = Instant::now();
         let mut sleeping    = false;
         let mut prev: Option<(DisplayState, Tab, View, Settings)> = None;
+        // What was last PHYSICALLY painted, as opposed to `prev`'s LOGICAL UI
+        // state. The screensaver paints a different tab than `active_tab`, so
+        // conflating the two would make every iteration look like a layout
+        // change (full-screen wipe at 20 Hz) — or, on the PIXEL tab, make the
+        // engage transition look like no change at all (tab bar never erased).
+        #[cfg(not(feature = "eink"))]
+        let mut prev_paint: Option<(Tab, bool)> = None;   // (tab_to_draw, full_screen)
+        #[cfg(not(feature = "eink"))]
+        let mut art = ArtState::new();
+        #[cfg(not(feature = "eink"))]
+        let mut last_mood = mascot::mood_for(&ds);
+        // Spec §7: an invalid blob means no PIXEL tab and no auto-engage.
+        #[cfg(not(feature = "eink"))]
+        let art_ok = sprites().is_some();
+        #[cfg(not(feature = "eink"))]
+        if !art_ok { log::error!("sprite blob failed to validate — PIXEL tab omitted"); }
         loop {
             if last_poll.elapsed() >= std::time::Duration::from_millis(POLL_MS) {
                 last_poll = Instant::now();
@@ -925,11 +1189,13 @@ fn run() -> Result<()> {
                     sleeping = false;
                     set_brightness(&mut bl, settings.brightness);
                     prev = None;
+                    art.wake();
+                } else if art.wake() {
+                    // Touch dismissed the screensaver — consume it so waking the
+                    // device never also switches tabs or opens a session card.
+                    prev = None;
                 } else if sy < 34 {
-                    active_tab = if sx < 80 { Tab::Sessions }
-                                 else if sx < 160 { Tab::Usage }
-                                 else if sx < 240 { Tab::Metrics }
-                                 else { Tab::Settings };
+                    active_tab = tab_at(sx);
                     view = View::List;
                 } else if active_tab == Tab::Sessions {
                     view = sessions_touch(sx, sy, view, &ds);
@@ -960,6 +1226,22 @@ fn run() -> Result<()> {
             }
 
             if !sleeping {
+                #[cfg(not(feature = "eink"))]
+                let mood = mascot::mood_for(&ds);
+                #[cfg(not(feature = "eink"))]
+                let mood_changed = mood != last_mood;
+                #[cfg(not(feature = "eink"))]
+                { last_mood = mood; }
+
+                #[cfg(not(feature = "eink"))]
+                let showing_art = art.engaged || active_tab == Tab::Pixel;
+                #[cfg(not(feature = "eink"))]
+                let art_sec = if art_ok { settings.art_sec } else { 0 };
+                #[cfg(not(feature = "eink"))]
+                let art_dirty = art.tick(art_sec, mood_changed) && showing_art;
+                #[cfg(feature = "eink")]
+                let art_dirty = false;
+
                 let layout_changed = prev.as_ref()
                     .map(|p| p.1 != active_tab || p.2 != view).unwrap_or(true);
                 let content_changed = prev.as_ref().map(|p| match active_tab {
@@ -967,11 +1249,45 @@ fn run() -> Result<()> {
                     Tab::Metrics  => p.0.metrics != ds.metrics,
                     _             => p.0 != ds,
                 }).unwrap_or(true);
-                if layout_changed || content_changed {
-                    render(&mut display, &ds, active_tab, view, &settings, layout_changed);
+
+                // What this iteration WOULD paint. Computed after `art.tick()`
+                // so the engaging iteration already paints the first frame.
+                #[cfg(not(feature = "eink"))]
+                let (tab_to_draw, frame_idx, full_screen) = if art.engaged {
+                    (Tab::Pixel, art.frame, true)
+                } else {
+                    (active_tab, art.frame, false)
+                };
+                #[cfg(feature = "eink")]
+                let (tab_to_draw, frame_idx, full_screen) = (active_tab, 0usize, false);
+
+                // Engaging/leaving the screensaver changes what is painted (tab
+                // identity and/or the tab bar's presence) without changing the
+                // LOGICAL state, so it needs its own trigger and its own clear.
+                #[cfg(not(feature = "eink"))]
+                let paint_changed =
+                    prev_paint.map(|p| p != (tab_to_draw, full_screen)).unwrap_or(true);
+                // e-ink never engages the art: tab_to_draw == active_tab and
+                // full_screen is always false, so this is always subsumed by
+                // `layout_changed` there.
+                #[cfg(feature = "eink")]
+                let paint_changed = false;
+
+                if layout_changed || content_changed || art_dirty || paint_changed {
+                    let clear = layout_changed || paint_changed;
+
+                    render(&mut display, &ds, tab_to_draw, view, &settings,
+                           clear, frame_idx, full_screen);
+                    // `prev` holds the LOGICAL state (`active_tab`); `prev_paint`
+                    // holds what was actually painted.
                     prev = Some((ds.clone(), active_tab, view, settings));
+                    #[cfg(not(feature = "eink"))]
+                    { prev_paint = Some((tab_to_draw, full_screen)); }
                 }
             }
+            // 50 ms poll: art frames land on ~150 ms (≈6.7 fps) rather than the
+            // nominal 125 ms. Deliberate — a tighter loop costs touch-poll CPU
+            // for an imperceptible smoothness gain.
             FreeRtos::delay_ms(50);
         }
     }
@@ -1054,6 +1370,19 @@ fn run() -> Result<()> {
         let mut last_touch  = Instant::now();
         let mut sleeping    = false;
         let mut prev: Option<(DisplayState, Tab, View, Settings)> = None;
+        // What was last PHYSICALLY painted, as opposed to `prev`'s LOGICAL UI
+        // state. See the wifi loop for why the two must stay separate.
+        #[cfg(not(feature = "eink"))]
+        let mut prev_paint: Option<(Tab, bool)> = None;   // (tab_to_draw, full_screen)
+        #[cfg(not(feature = "eink"))]
+        let mut art = ArtState::new();
+        #[cfg(not(feature = "eink"))]
+        let mut last_mood = mascot::mood_for(&DisplayState::default());
+        // Spec §7: an invalid blob means no PIXEL tab and no auto-engage.
+        #[cfg(not(feature = "eink"))]
+        let art_ok = sprites().is_some();
+        #[cfg(not(feature = "eink"))]
+        if !art_ok { log::error!("sprite blob failed to validate — PIXEL tab omitted"); }
 
         loop {
             // Current state first, so touch handling can hit-test sessions.
@@ -1077,11 +1406,13 @@ fn run() -> Result<()> {
                     sleeping = false;
                     set_brightness(&mut bl, settings.brightness);
                     prev = None;
+                    art.wake();
+                } else if art.wake() {
+                    // Touch dismissed the screensaver — consume it so waking the
+                    // device never also switches tabs or opens a session card.
+                    prev = None;
                 } else if sy < 34 {
-                    active_tab = if sx < 80 { Tab::Sessions }
-                                 else if sx < 160 { Tab::Usage }
-                                 else if sx < 240 { Tab::Metrics }
-                                 else { Tab::Settings };
+                    active_tab = tab_at(sx);
                     view = View::List;
                 } else if active_tab == Tab::Sessions {
                     view = sessions_touch(sx, sy, view, &state);
@@ -1114,6 +1445,22 @@ fn run() -> Result<()> {
             }
 
             if !sleeping {
+                #[cfg(not(feature = "eink"))]
+                let mood = mascot::mood_for(&state);
+                #[cfg(not(feature = "eink"))]
+                let mood_changed = mood != last_mood;
+                #[cfg(not(feature = "eink"))]
+                { last_mood = mood; }
+
+                #[cfg(not(feature = "eink"))]
+                let showing_art = art.engaged || active_tab == Tab::Pixel;
+                #[cfg(not(feature = "eink"))]
+                let art_sec = if art_ok { settings.art_sec } else { 0 };
+                #[cfg(not(feature = "eink"))]
+                let art_dirty = art.tick(art_sec, mood_changed) && showing_art;
+                #[cfg(feature = "eink")]
+                let art_dirty = false;
+
                 let layout_changed = prev.as_ref()
                     .map(|p| p.1 != active_tab || p.2 != view).unwrap_or(true);
                 let content_changed = prev.as_ref().map(|p| match active_tab {
@@ -1121,11 +1468,45 @@ fn run() -> Result<()> {
                     Tab::Metrics  => p.0.metrics != state.metrics,
                     _             => p.0 != state,
                 }).unwrap_or(true);
-                if layout_changed || content_changed {
-                    render(&mut display, &state, active_tab, view, &settings, layout_changed);
+
+                // What this iteration WOULD paint. Computed after `art.tick()`
+                // so the engaging iteration already paints the first frame.
+                #[cfg(not(feature = "eink"))]
+                let (tab_to_draw, frame_idx, full_screen) = if art.engaged {
+                    (Tab::Pixel, art.frame, true)
+                } else {
+                    (active_tab, art.frame, false)
+                };
+                #[cfg(feature = "eink")]
+                let (tab_to_draw, frame_idx, full_screen) = (active_tab, 0usize, false);
+
+                // Engaging/leaving the screensaver changes what is painted (tab
+                // identity and/or the tab bar's presence) without changing the
+                // LOGICAL state, so it needs its own trigger and its own clear.
+                #[cfg(not(feature = "eink"))]
+                let paint_changed =
+                    prev_paint.map(|p| p != (tab_to_draw, full_screen)).unwrap_or(true);
+                // e-ink never engages the art: tab_to_draw == active_tab and
+                // full_screen is always false, so this is always subsumed by
+                // `layout_changed` there.
+                #[cfg(feature = "eink")]
+                let paint_changed = false;
+
+                if layout_changed || content_changed || art_dirty || paint_changed {
+                    let clear = layout_changed || paint_changed;
+
+                    render(&mut display, &state, tab_to_draw, view, &settings,
+                           clear, frame_idx, full_screen);
+                    // `prev` holds the LOGICAL state (`active_tab`); `prev_paint`
+                    // holds what was actually painted.
                     prev = Some((state, active_tab, view, settings));
+                    #[cfg(not(feature = "eink"))]
+                    { prev_paint = Some((tab_to_draw, full_screen)); }
                 }
             }
+            // 50 ms poll: art frames land on ~150 ms (≈6.7 fps) rather than the
+            // nominal 125 ms. Deliberate — a tighter loop costs touch-poll CPU
+            // for an imperceptible smoothness gain.
             FreeRtos::delay_ms(50);
         }
         } // end colour-LCD render loop block (cfg(not(eink)))

@@ -27,6 +27,7 @@ jobs:
     outputs:
       bridge: ${{ steps.filter.outputs.bridge }}
       firmware: ${{ steps.filter.outputs.firmware }}
+      tools: ${{ steps.filter.outputs.tools }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -35,9 +36,22 @@ jobs:
           filters: |
             bridge:
               - 'bridge/**'
+              # The host test suite for firmware logic lives in bridge/tests/ but
+              # reaches into the firmware crate: #[path]-includes mascot.rs /
+              # proto.rs / sprite.rs and include_bytes!s the sprite blob. Without
+              # these two lines a firmware-only PR (e.g. an artwork refresh)
+              # skips all of them — including the golden-checksum test that is
+              # the ONLY guard that the committed blob decodes as intended.
+              - 'firmware/src/**'
+              - 'firmware/assets/**'
               - '.github/workflows/ci.yml'
             firmware:
               - 'firmware/**'
+              - '.github/workflows/ci.yml'
+            tools:
+              - 'tools/**'
+              - 'assets/gif/**'
+              - 'firmware/assets/**'
               - '.github/workflows/ci.yml'
 
   # ── Bridge: tests (Linux + Windows) ───────────────────────────────────────
@@ -161,6 +175,24 @@ jobs:
           name: bridge-coverage-lcov
           path: lcov.info
 
+  # ── Tools: GIF -> sprite converter tests (Python) ─────────────────────────
+  # Guards the MOODS <-> mascot::mood_index wire contract and the converter's
+  # determinism. Cheap (~1 min) and needs only Pillow.
+  tools-test:
+    name: Tools · Python tests
+    needs: changes
+    if: needs.changes.outputs.tools == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install Pillow
+        run: python3 -m pip install --upgrade Pillow
+      - name: Run converter tests
+        run: python3 tools/test_gif2sprite.py
+
   # ── Firmware: ESP32 build matrix (blocking) ───────────────────────────────
   # Every shipped feature combination must compile. BLE is known-broken on the
   # current esp toolchain (see firmware/Cargo.toml) and runs as a separate
@@ -229,9 +261,104 @@ jobs:
         run: |
           ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
           if [ -f "$ELF" ]; then ls -lh "$ELF"; else echo "ERROR: ELF not found"; exit 1; fi
+      # The pixel-art blob adds ~81 KB. The default build targets the built-in
+      # single-`factory` layout (1 MiB app partition), so record the real
+      # margin on every run and fail before an addition can silently overflow it.
+      - name: Check app image fits the factory partition
+        run: |
+          # Measure the flash-resident sections of the app ELF directly. A
+          # stray `.bin` (e.g. a partition-table binary) is NOT used here: an
+          # earlier version of this step preferred any `.bin` it found, which
+          # silently measured the wrong file and reported a fake, identical
+          # size across every matrix leg. The ELF at this path is reliable.
+          # NB the toolchain binary is `xtensa-esp-elf-size` (esp-15.x), NOT
+          # `xtensa-esp32-elf-size` — the latter does not exist on the runner.
+          ELF=/tmp/fw-target/xtensa-esp32-espidf/release/vibe-firmware
+          SIZER=$(command -v xtensa-esp-elf-size || command -v xtensa-esp32-elf-size || true)
+          if [ -z "$SIZER" ]; then
+            echo "::warning::no esp size tool on PATH; falling back to ELF file size (overestimates)"
+            SIZE=$(stat -c%s "$ELF" 2>/dev/null || echo "")
+          else
+            SIZER_OUTPUT=$("$SIZER" -A "$ELF" 2>&1 || true)
+            echo "----- $SIZER -A $ELF -----"
+            echo "$SIZER_OUTPUT"
+            echo "---------------------------------------------------------"
+            {
+              echo "<details><summary>Raw <code>$(basename "$SIZER") -A</code> output (${{ matrix.name }})</summary>"
+              echo ""
+              echo '```'
+              echo "$SIZER_OUTPUT"
+              echo '```'
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Sum every loaded section (nonzero address) that isn't a
+            # zero-initialized RAM section (bss/noinit never occupies space
+            # in the flashed image). This is deliberately not a hardcoded
+            # list of esp-idf section-name prefixes — the raw table printed
+            # above is what makes this arithmetic auditable, not a regex.
+            SIZE=$(echo "$SIZER_OUTPUT" | awk '
+              $1 ~ /^\./ && $2 ~ /^[0-9]+$/ {
+                name = tolower($1); sz = $2 + 0; addr = $3 + 0
+                if (name ~ /bss|noinit/) next
+                if (addr == 0) next
+                s += sz
+              }
+              END { print s+0 }
+            ')
+          fi
+          if [ -z "$SIZE" ] || [ "$SIZE" -le 0 ]; then
+            echo "::error::could not determine app image size"; exit 1
+          fi
+          # A real firmware image embedding the ~82 KB pixel-art asset cannot
+          # be anywhere near this small. Landing here means the measurement
+          # itself is broken (wrong file, wrong tool, wrong sections) — a
+          # guard that can't detect its own misconfiguration is worthless,
+          # so fail loudly instead of reporting a fictitious margin.
+          PLAUSIBILITY_FLOOR_BYTES=204800
+          if [ "$SIZE" -lt "$PLAUSIBILITY_FLOOR_BYTES" ]; then
+            echo "::error::measured app image size ($SIZE B) is implausibly small (< $PLAUSIBILITY_FLOOR_BYTES B) — the size guard is measuring the wrong thing, not a genuinely tiny firmware"
+            exit 1
+          fi
+          # Partition limit depends on which layout this matrix leg targets:
+          # usb/eink keep the built-in single-`factory` layout (1 MiB app
+          # partition); wifi-ota targets the dual-slot OTA layout defined in
+          # firmware/partitions_ota.csv, whose `ota_0` slot is 0x1A0000 =
+          # 1,703,936 B. This checks each build against its INTENDED layout;
+          # whether the OTA sdkconfig layer is actually applied at build time
+          # is tracked separately and is out of scope for this guard.
+          case "${{ matrix.name }}" in
+            wifi-ota)
+              LIMIT=1703936
+              LIMIT_DESC="ota_0 slot, partitions_ota.csv"
+              ;;
+            *)
+              LIMIT=1048576
+              LIMIT_DESC="factory partition"
+              ;;
+          esac
+          MARGIN=$((LIMIT - SIZE))
+          echo "app image: $SIZE bytes, limit: $LIMIT B ($LIMIT_DESC), margin: $MARGIN"
+          {
+            echo "### Firmware size (${{ matrix.name }})"
+            echo ""
+            echo "| metric | value |"
+            echo "| --- | ---: |"
+            echo "| app image | $SIZE B |"
+            echo "| partition limit | $LIMIT B ($LIMIT_DESC) |"
+            echo "| margin | $MARGIN B |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SIZE" -ge "$LIMIT" ]; then
+            echo "::error::app image ($SIZE B) does not fit the $LIMIT_DESC ($LIMIT B)"
+            exit 1
+          fi
+          if [ "$MARGIN" -lt 51200 ]; then
+            echo "::warning::only $MARGIN bytes of $LIMIT_DESC headroom remain (<50 KB)"
+          fi
       # Makes the gap from #21 visible on every run instead of silently green:
       # this job proves the ota feature compiles, NOT that the OTA partition
-      # table is in effect.
+      # table is in effect. Note the size guard above deliberately checks
+      # wifi-ota against the ota_0 slot (its INTENDED layout); this step is what
+      # records that the intended layout is not actually applied yet.
       - name: Report OTA partition-table coverage gap (#21)
         if: matrix.name == 'wifi-ota'
         run: |
@@ -309,17 +436,18 @@ jobs:
   ci-gate:
     name: CI / all-green
     if: always()
-    needs: [changes, bridge-test, bridge-lint, firmware-build]
+    needs: [changes, bridge-test, bridge-lint, tools-test, firmware-build]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs passed
         run: |
           echo "bridge-test    = ${{ needs.bridge-test.result }}"
           echo "bridge-lint    = ${{ needs.bridge-lint.result }}"
+          echo "tools-test     = ${{ needs.tools-test.result }}"
           echo "firmware-build = ${{ needs.firmware-build.result }}"
           # A 'skipped' result means the area was untouched — that is a pass.
           # firmware-ble is allow-failure and excluded from the blocking set.
-          for r in "${{ needs.bridge-test.result }}" "${{ needs.bridge-lint.result }}" "${{ needs.firmware-build.result }}"; do
+          for r in "${{ needs.bridge-test.result }}" "${{ needs.bridge-lint.result }}" "${{ needs.tools-test.result }}" "${{ needs.firmware-build.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
               echo "::error::A required CI job did not pass ($r)."
               exit 1

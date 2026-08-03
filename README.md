@@ -56,6 +56,35 @@ mapping, and [docs/api.md](docs/api.md) for every endpoint and payload shape.
 
 ---
 
+## Pixel-art screensaver
+
+The **PIXEL** tab shows an animated mascot whose animation reflects what your
+agents are doing. After an idle period it takes over the whole screen as a
+screensaver; any touch returns you to the tab you were on.
+
+| Animation | Shown when |
+| --- | --- |
+| ![happy](assets/gif/clawd-happy.gif) | a session is **waiting** for you |
+| ![juggling](assets/gif/clawd-juggling.gif) | **two or more** sessions are working |
+| ![building](assets/gif/clawd-building.gif) | one session has been working but produced no output for over 2 minutes — a long build or tool call |
+| ![typing](assets/gif/clawd-typing.gif) | exactly **one** session is working |
+| ![sleeping](assets/gif/clawd-sleeping.gif) | nothing is running, everything is idle, or the bridge is offline |
+
+Checks run top-down and the first match wins — except an offline bridge is
+checked *before* all of them: stale session data must never be shown as a
+session waiting for you, so a lost connection always falls back to Sleeping.
+While the bridge is reachable, "waiting" is checked first among the rest,
+since that's the state that wants a human.
+
+Configure it under **SET → Idle art**: `Off`, `30s`, `1m`, `5m`. Values that
+would never fire because the screen blanks first (see **Sleep after**) are
+shown dimmed and cannot be selected.
+
+The artwork is adapted from [clawd](https://github.com/KebeliSamet0/clawd) by
+KebeliSamet0, used under the MIT License. See `assets/gif/NOTICE`.
+
+---
+
 ## Hardware Requirements
 
 | Component | Specification |
