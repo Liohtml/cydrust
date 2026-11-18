@@ -23,6 +23,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde_json::Value;
 use serialport::SerialPort;
+use vibe_bridge::config;
 
 const POLL_SECS: u64 = 2;
 const BAUD: u32 = 115_200;
@@ -88,7 +89,7 @@ fn main() -> Result<()> {
     let mut port_name = "COM7".to_string();
     let mut bridge_url = "http://localhost:5151".to_string();
     let mut token: Option<String> = None;
-    let mut config_path = "config.toml".to_string();
+    let mut config_path: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -107,39 +108,35 @@ fn main() -> Result<()> {
             }
             "--config" => {
                 i += 1;
-                config_path = args[i].clone();
+                config_path = Some(args[i].clone());
             }
             _ => {}
         }
         i += 1;
     }
 
-    // resolve token: VIBE_MONITOR_TOKEN env var > config.toml > CLI --token flag
-    // Env vars are preferred for security to avoid exposing tokens in process arguments.
-    let token = if let Ok(env_token) = std::env::var("VIBE_MONITOR_TOKEN") {
-        env_token
-    } else {
-        // Fall back to config file
-        match std::fs::read_to_string(&config_path) {
-            Ok(content) => {
-                let parsed: toml::Value = content.parse().context("parse config.toml")?;
-                parsed["token"]
-                    .as_str()
-                    .or(token.as_deref())
-                    .with_context(|| {
-                        "token not found in VIBE_MONITOR_TOKEN env var, config.toml, or --token flag"
-                    })?
-                    .to_string()
-            }
-            Err(_) if token.is_some() => {
-                // Config file doesn't exist, but CLI flag was provided
-                token.unwrap()
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "reading {config_path}: {e} (and no VIBE_MONITOR_TOKEN env var or --token flag provided)"
-                ));
-            }
+    // token: VIBE_MONITOR_TOKEN > config file > --token
+    // The config file is --config if given, otherwise the shared lookup
+    // (./config.toml, then the per-user config vibe-bridge creates on first run).
+    let token = match std::env::var("VIBE_MONITOR_TOKEN") {
+        Ok(env_token) => env_token,
+        Err(_) => {
+            let found = match config::find(config_path.as_deref()) {
+                Ok(found) => found,
+                // An explicit --config that does not exist is only fatal when
+                // there is no --token to fall back on.
+                Err(_) if token.is_some() => None,
+                Err(e) => return Err(e),
+            };
+            found
+                .as_deref()
+                .and_then(config::read_client)
+                .and_then(|c| c.token)
+                .or(token)
+                .context(
+                    "no hub token found: start vibe-bridge once (it creates the config), \
+                     or pass --config <path>, --token, or set VIBE_MONITOR_TOKEN",
+                )?
         }
     };
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Bridge** — Zero-config first run: `vibe-bridge` with no config creates one in the per-user config directory with a random 256-bit token (owner-only on Unix). `serial_bridge`, `install_hooks` and `vibe_hook` find the same file on their own (#25)
+
+### Changed
+- **Bridge** — `install_hooks` needs no arguments and registers `vibe_hook --url … --config <path>`; the hook reads the token from the config file, so `VIBE_MONITOR_TOKEN` no longer has to be exported in the shell that starts Claude Code. Passing `--token` keeps the previous environment-variable registration
+- **Bridge** — `vibe_hook` URL precedence is now `--url` > `VIBE_HUB_URL` > config file (the environment variable used to rank below an explicit `--config`)
+
 ## [0.4.0] - 2026-08-03
 
 ### Added

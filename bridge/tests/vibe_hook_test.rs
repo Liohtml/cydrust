@@ -119,19 +119,36 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn run_vibe_hook(url: &str, token: Option<&str>, stdin_payload: &str) -> std::process::ExitStatus {
+    // An empty config dir: without it the hook's config lookup could pick up a
+    // real token from the machine running the tests.
+    let empty = tempfile::tempdir().unwrap();
+    run_vibe_hook_with(Some(url), token, empty.path(), stdin_payload)
+}
+
+/// Runs the hook with `config_dir` as both its per-user config directory and
+/// its working directory, so config discovery sees only what the test put there.
+fn run_vibe_hook_with(
+    url: Option<&str>,
+    token: Option<&str>,
+    config_dir: &std::path::Path,
+    stdin_payload: &str,
+) -> std::process::ExitStatus {
     let bin = env!("CARGO_BIN_EXE_vibe_hook");
     let mut cmd = Command::new(bin);
-    cmd.arg("--url")
-        .arg(url)
+    if let Some(url) = url {
+        cmd.arg("--url").arg(url);
+    }
+    cmd.current_dir(config_dir)
+        .env("CYDRUST_CONFIG_DIR", config_dir)
+        .env_remove("VIBE_HUB_URL")
+        .env_remove("VIBE_TOKEN")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if let Some(t) = token {
-        cmd.env("VIBE_MONITOR_TOKEN", t);
-    } else {
-        cmd.env_remove("VIBE_MONITOR_TOKEN");
-        cmd.env_remove("VIBE_TOKEN");
-    }
+    match token {
+        Some(t) => cmd.env("VIBE_MONITOR_TOKEN", t),
+        None => cmd.env_remove("VIBE_MONITOR_TOKEN"),
+    };
     let mut child = cmd.spawn().expect("failed to spawn vibe_hook binary");
     child
         .stdin
@@ -266,5 +283,55 @@ fn no_server_listening_still_exits_zero_promptly() {
     assert!(
         elapsed < Duration::from_secs(5),
         "must not hang waiting on a dead endpoint (took {elapsed:?})"
+    );
+}
+
+// ── config discovery ──────────────────────────────────────────────────────────
+
+/// The zero-config path: no flags, no environment — token and hub address both
+/// come from the per-user config file the hub creates on first run.
+#[test]
+fn token_and_url_come_from_the_discovered_config_with_no_flags_or_env() {
+    let (port, handle) = spawn_mini_server();
+    let cfg = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cfg.path().join("config.toml"),
+        format!("token = \"from-config-file\"\nhost = \"127.0.0.1\"\nport = {port}\n"),
+    )
+    .unwrap();
+
+    let payload =
+        serde_json::json!({"hook_event_name": "Notification", "session_id": "s1"}).to_string();
+    let status = run_vibe_hook_with(None, None, cfg.path(), &payload);
+    assert!(status.success());
+
+    let req = handle.join().unwrap();
+    assert_eq!(
+        req.header("x-vibemonitor-token").as_deref(),
+        Some("from-config-file")
+    );
+}
+
+/// Existing setups export VIBE_MONITOR_TOKEN; that must keep winning over
+/// whatever a config file says.
+#[test]
+fn env_token_overrides_the_discovered_config() {
+    let (port, handle) = spawn_mini_server();
+    let url = format!("http://127.0.0.1:{port}");
+    let cfg = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cfg.path().join("config.toml"),
+        "token = \"from-config-file\"\n",
+    )
+    .unwrap();
+
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1"}).to_string();
+    let status = run_vibe_hook_with(Some(&url), Some("from-env"), cfg.path(), &payload);
+    assert!(status.success());
+
+    let req = handle.join().unwrap();
+    assert_eq!(
+        req.header("x-vibemonitor-token").as_deref(),
+        Some("from-env")
     );
 }
