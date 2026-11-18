@@ -12,10 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bridge** — `serial_bridge` finds the CYD's serial port by USB id (CH340 `1a86:7523`, CP2102 `10c4:ea60`) and re-detects it on every reconnect; `--port` still forces one. Adds `--help` (#26)
 
 ### Changed
+- **Release** — One archive per platform, `cydrust-<version>-<host-triple>`, containing all four host binaries plus `README.txt`, the example config and the licence. Replaces the separate `vibe-bridge-*` and `serial-bridge-*` archives (#24)
+- README Quick Start leads with the release download; building from source is the second path
 - **Bridge** — `install_hooks` needs no arguments and registers `vibe_hook --url … --config <path>`; the hook reads the token from the config file, so `VIBE_MONITOR_TOKEN` no longer has to be exported in the shell that starts Claude Code. Passing `--token` keeps the previous environment-variable registration
 - **Bridge** — `vibe_hook` URL precedence is now `--url` > `VIBE_HUB_URL` > config file (the environment variable used to rank below an explicit `--config`)
 
 ### Fixed
+- **Release** — `install_hooks` and `vibe_hook` were never shipped, so a release install could not show the Waiting state (#24)
+- **Release** — The macOS archive was labelled `macos-x86_64` but built on an Apple Silicon runner; archive names now carry rustc's host triple
 - **Bridge** — `serial_bridge --port` without a value panicked with an index out of bounds, and unknown flags were silently ignored (a typo fell back to `COM7`); both now print an error and usage and exit 2
 - **Bridge** — `serial_bridge` reports why a port cannot be opened — permission denied (with the `dialout` fix on Linux), in use, or not present — instead of "unavailable", and prints it once rather than every two seconds
 - `just run-bridge` / `just run-serial` passed `bridge/config.toml` after `cd bridge`, so the default looked for `bridge/bridge/config.toml`

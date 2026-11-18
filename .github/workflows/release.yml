@@ -1,7 +1,8 @@
 name: Release
 
-# Builds the vibe-bridge + serial_bridge binaries for Linux/Windows/macOS and
-# publishes them to the GitHub Release for a pushed version tag. The firmware
+# Builds all four host binaries (vibe-bridge, serial_bridge, install_hooks,
+# vibe_hook) for Linux/Windows/macOS and publishes ONE archive per platform to
+# the GitHub Release for a pushed version tag. The firmware
 # .bin image is attached separately by firmware-release.yml (same tag). This
 # workflow owns the Release object and its notes (taken from the tag annotation).
 
@@ -19,24 +20,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ── Build bridge binaries (both bins per platform) ────────────────────────
+  # ── Build one host bundle per platform ────────────────────────────────────
   build:
-    name: Build binaries (${{ matrix.target_label }})
+    name: Build bundle (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            target_label: linux-x86_64
-          - os: windows-latest
-            target_label: windows-x86_64
-          - os: macos-latest
-            target_label: macos-x86_64
-
-    defaults:
-      run:
-        working-directory: bridge
+        # The archive name carries rustc's host triple (see
+        # scripts/package-release.sh), so it always states what was built —
+        # macos-latest is Apple Silicon, not x86_64.
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Checkout repository
@@ -64,31 +58,39 @@ jobs:
             ${{ runner.os }}-cargo-release-
             ${{ runner.os }}-cargo-
 
-      - name: Build vibe-bridge + serial_bridge (release)
-        run: cargo build --release --bin vibe-bridge --bin serial_bridge
+      # All four: install_hooks and vibe_hook are what make the Waiting state
+      # work, and install_hooks resolves vibe_hook as a sibling executable.
+      - name: Build host binaries (release)
+        run: cargo build --release -p vibe-bridge --bins
 
-      - name: Package archives (Unix)
-        if: runner.os != 'Windows'
-        working-directory: ${{ github.workspace }}
-        run: |
-          tar -czf "vibe-bridge-${{ matrix.target_label }}.tar.gz"  -C target/release vibe-bridge
-          tar -czf "serial-bridge-${{ matrix.target_label }}.tar.gz" -C target/release serial_bridge
+      - name: Stage bundle
+        shell: bash
+        run: scripts/package-release.sh "${{ github.ref_name }}" dist
 
-      - name: Package archives (Windows)
+      # Unix: package-release.sh already wrote the .tar.gz.
+      - name: Zip bundle (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        working-directory: ${{ github.workspace }}
         run: |
-          Compress-Archive -Path target/release/vibe-bridge.exe   -DestinationPath "vibe-bridge-${{ matrix.target_label }}.zip"
-          Compress-Archive -Path target/release/serial_bridge.exe -DestinationPath "serial-bridge-${{ matrix.target_label }}.zip"
+          $stage = Get-ChildItem dist -Directory | Select-Object -First 1
+          Compress-Archive -Path $stage.FullName -DestinationPath "dist/$($stage.Name).zip"
+
+      - name: Smoke-test the bundle
+        shell: bash
+        run: |
+          stage="$(find dist -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          ls -l "$stage"
+          "$stage"/serial_bridge* --help
+          "$stage"/install_hooks* --help
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bridge-binaries-${{ matrix.target_label }}
+          name: host-bundle-${{ matrix.os }}
           path: |
-            ${{ github.workspace }}/vibe-bridge-${{ matrix.target_label }}.*
-            ${{ github.workspace }}/serial-bridge-${{ matrix.target_label }}.*
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
           retention-days: 7
 
   # ── Publish the GitHub Release (tag pushes only) ──────────────────────────

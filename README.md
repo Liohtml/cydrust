@@ -116,7 +116,43 @@ are documented in [docs/architecture.md](docs/architecture.md).
 
 ## Quick Start
 
-### Prerequisites
+Two ways in. **Use a release** if you want it running — no compiler needed.
+**Build from source** if you want to change the code or use the WiFi transport.
+
+### Use a release (no toolchain)
+
+1. **Download** from the [latest release](https://github.com/Liohtml/cydrust/releases/latest):
+   the `cydrust-<version>-<platform>` archive for your computer, and
+   `vibe-firmware-default-esp32.bin` for the device. Unpack the archive anywhere.
+
+2. **Flash the device** (once). Plug the CYD in over USB, then:
+
+   ```bash
+   pip install esptool
+   esptool.py --chip esp32 write_flash 0x0 vibe-firmware-default-esp32.bin
+   ```
+
+   The screen shows `hub offline` — that is the firmware running and waiting for you.
+
+3. **Start the tools**, from the unpacked directory:
+
+   ```bash
+   ./vibe-bridge       # the hub; first run creates its own config and token
+   ./install_hooks     # once: registers the Claude Code hooks
+   ./serial_bridge     # USB relay; finds the CYD's port by itself
+   ```
+
+   Keep `vibe-bridge` and `serial_bridge` running (two terminals). On Windows the files
+   end in `.exe` and run as `.\vibe-bridge.exe`.
+
+Start a Claude Code session and it appears on the display within a couple of seconds.
+The same steps ship in the archive as `README.txt`. On Linux, USB serial access needs
+membership of the `dialout` group — `serial_bridge` tells you if that is what is missing.
+Under WSL2, see [docs/wsl2.md](docs/wsl2.md) first.
+
+### Build from source
+
+#### Prerequisites
 
 | Tool | Install |
 |------|---------|
@@ -129,14 +165,14 @@ Linux/WSL2 also needs `build-essential pkg-config libudev-dev` and dialout-group
 membership for USB serial access — see [docs/development.md](docs/development.md#prerequisites)
 for the exact commands.
 
-### 1 — Clone
+#### 1 — Clone
 
 ```bash
 git clone https://github.com/Liohtml/cydrust.git
 cd cydrust
 ```
 
-### 2 — Build and run the bridge
+#### 2 — Build and run the bridge
 
 ```bash
 cd bridge
@@ -150,7 +186,7 @@ your per-user config directory, and every other binary reads it from there. To u
 your own file instead, pass its path (`vibe-bridge path/to/config.toml`) or keep a
 `config.toml` in the working directory.
 
-### 3 — Wire up Claude Code hooks (optional but recommended)
+#### 3 — Wire up Claude Code hooks (optional but recommended)
 
 ```bash
 cargo run --bin install_hooks
@@ -163,7 +199,7 @@ variable to export. Re-run any time; it replaces only its own marker block. See
 [docs/api.md#post-hook](docs/api.md#post-hook) for the manual JSON if you'd rather not
 run the installer.
 
-### 4 — Build and flash the firmware
+#### 4 — Build and flash the firmware
 
 ```bash
 cd firmware
