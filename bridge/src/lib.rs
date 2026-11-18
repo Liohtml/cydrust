@@ -3,6 +3,7 @@
 pub mod collector;
 pub mod collector_hermes;
 pub mod collector_opencode;
+pub mod config;
 pub mod federation;
 pub mod hub;
 pub mod metrics;

@@ -129,31 +129,37 @@ Linux/WSL2 also needs `build-essential pkg-config libudev-dev` and dialout-group
 membership for USB serial access — see [docs/development.md](docs/development.md#prerequisites)
 for the exact commands.
 
-### 1 — Clone and configure
+### 1 — Clone
 
 ```bash
 git clone https://github.com/Liohtml/cydrust.git
 cd cydrust
-# edit bridge/config.toml — set a random token, keep it out of version control
 ```
 
 ### 2 — Build and run the bridge
 
 ```bash
 cd bridge
-cargo run --release --bin vibe-bridge -- config.toml
-# => INFO vibe-bridge listening on http://0.0.0.0:5151
+cargo run --release --bin vibe-bridge
+# => INFO first run: created ~/.config/cydrust/config.toml with a new random token
+# => INFO vibe-bridge (all-Rust hub) listening on http://127.0.0.1:5151
 ```
+
+There is nothing to configure: the first run writes a config with a random token to
+your per-user config directory, and every other binary reads it from there. To use
+your own file instead, pass its path (`vibe-bridge path/to/config.toml`) or keep a
+`config.toml` in the working directory.
 
 ### 3 — Wire up Claude Code hooks (optional but recommended)
 
 ```bash
-cargo run --bin install_hooks -- --url http://localhost:5151 --token your-secret-token-here
+cargo run --bin install_hooks
 ```
 
 This merges a `Notification` + `Stop` hook pair into `~/.claude/settings.json`
 idempotently — `Notification` flips a session to *Waiting*, `Stop` clears it when the
-turn ends. Re-run any time; it replaces only its own marker block. See
+turn ends. The hook reads the token from the config file, so there is no environment
+variable to export. Re-run any time; it replaces only its own marker block. See
 [docs/api.md#post-hook](docs/api.md#post-hook) for the manual JSON if you'd rather not
 run the installer.
 

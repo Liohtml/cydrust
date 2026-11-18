@@ -2,7 +2,7 @@
 // usage, computes per-model metrics + titles, and serves /state — the all-Rust
 // replacement for the Python vibemonitor hub.
 use vibe_bridge::{
-    collector, collector_hermes, collector_opencode, federation, hub, metrics, state, usage,
+    collector, collector_hermes, collector_opencode, config, federation, hub, metrics, state, usage,
 };
 
 use anyhow::Result;
@@ -104,11 +104,20 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
 
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config.toml".to_string());
+    // No argument: ./config.toml, else the per-user config, else create one
+    // with a random token so a first run needs no setup at all.
+    let explicit = std::env::args().nth(1);
+    let (config_path, created) = config::find_or_create(explicit.as_deref())?;
+    if created {
+        info!(
+            "first run: created {} with a new random token",
+            config_path.display()
+        );
+    } else {
+        info!("config: {}", config_path.display());
+    }
     let cfg_text = std::fs::read_to_string(&config_path)
-        .map_err(|e| anyhow::anyhow!("Cannot read {config_path}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Cannot read {}: {e}", config_path.display()))?;
     let cfg: Config = toml::from_str(&cfg_text)?;
 
     // Validate configuration before using it

@@ -40,6 +40,8 @@ dirs = "6"
 shlex = "1"
 # constant-time token comparison (timing-oracle resistance)
 subtle = "2"
+# OS RNG for the auto-generated hub token (already in the tree via rustls)
+getrandom = "0.2"
 # serial bridge binary only
 serialport = "4"
 ureq = "2"

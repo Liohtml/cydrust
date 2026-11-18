@@ -25,6 +25,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
+use vibe_bridge::config;
 
 /// Events Claude Code fires that we register for. Only events the hub
 /// actually evaluates: "Notification" marks a session waiting, "Stop"
@@ -53,18 +54,35 @@ fn resolve_hook_exe() -> Option<PathBuf> {
     Some(candidate)
 }
 
-/// Build the command string Claude Code will execute for each event.
-/// Properly escapes all arguments to prevent shell injection.
-/// Uses environment variable for token to avoid CLI argument exposure.
-fn build_command(hook_exe: &Path, url: &str) -> Result<String, String> {
-    let exe_string = hook_exe.to_string_lossy();
-    let exe_quoted = shlex::try_quote(exe_string.as_ref())
-        .map_err(|_| "executable path contains NUL byte".to_string())?;
-    let url_quoted = shlex::try_quote(url).map_err(|_| "URL contains NUL byte".to_string())?;
-    Ok(format!(
-        "{} --url {} --token \"$VIBE_MONITOR_TOKEN\"",
-        exe_quoted, url_quoted
-    ))
+/// Where the registered hook gets its token from.
+enum TokenSource<'a> {
+    /// `--config <path>`: vibe_hook reads the token from the hub's config
+    /// file. Nothing to export, works from any shell, IDE or launcher.
+    Config(&'a Path),
+    /// `--token "$VIBE_MONITOR_TOKEN"`: the pre-config-discovery scheme, kept
+    /// for setups that have a token but no config file on this machine.
+    EnvVar,
+}
+
+/// Build the hook command line. Every interpolated value is shell-quoted; the
+/// token itself is never written into settings.json.
+fn build_command(hook_exe: &Path, url: &str, token: TokenSource) -> Result<String, String> {
+    let quote = |s: &str, what: &str| {
+        shlex::try_quote(s)
+            .map(|q| q.into_owned())
+            .map_err(|_| format!("{what} contains NUL byte"))
+    };
+    let exe_quoted = quote(hook_exe.to_string_lossy().as_ref(), "executable path")?;
+    let url_quoted = quote(url, "URL")?;
+    Ok(match token {
+        TokenSource::Config(path) => {
+            let cfg_quoted = quote(path.to_string_lossy().as_ref(), "config path")?;
+            format!("{exe_quoted} --url {url_quoted} --config {cfg_quoted}")
+        }
+        TokenSource::EnvVar => {
+            format!("{exe_quoted} --url {url_quoted} --token \"$VIBE_MONITOR_TOKEN\"")
+        }
+    })
 }
 
 /// True if a hook-block (a `{matcher, hooks:[...]}` object) contains one of our
@@ -140,31 +158,6 @@ fn merge_hooks(mut settings: Value, command: &str) -> Value {
     settings
 }
 
-/// Best-effort read of token + base url from a bridge config.toml.
-fn from_config(path: &str) -> (Option<String>, Option<String>) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return (None, None);
-    };
-    let Ok(val) = toml::from_str::<toml::Value>(&text) else {
-        return (None, None);
-    };
-    let token = val
-        .get("token")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string());
-    let url = match (
-        val.get("host").and_then(|h| h.as_str()),
-        val.get("port").and_then(|p| p.as_integer()),
-    ) {
-        (Some(host), Some(port)) => {
-            let host = if host == "0.0.0.0" { "127.0.0.1" } else { host };
-            Some(format!("http://{host}:{port}"))
-        }
-        _ => None,
-    };
-    (token, url)
-}
-
 fn main() {
     if let Err(e) = run() {
         eprintln!("install_hooks: error: {e}");
@@ -205,7 +198,7 @@ fn run() -> Result<(), String> {
                 i += 2;
             }
             "-h" | "--help" => {
-                println!("Usage: install_hooks [--url URL] [--token TOK] [--config config.toml] [--path settings.json] [--hook-exe path]");
+                println!("Usage: install_hooks [--url URL] [--config config.toml] [--token TOK] [--path settings.json] [--hook-exe path]\n\nWith no arguments, uses the config vibe-bridge created on first run.");
                 return Ok(());
             }
             other => {
@@ -214,19 +207,35 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // ── resolve url + token: flags > config.toml > defaults ─────────────────
-    if let Some(cfg) = config_path.as_deref() {
-        let (cfg_token, cfg_url) = from_config(cfg);
-        if token.is_none() {
-            token = cfg_token;
+    // ── resolve config file, url, token source ──────────────────────────────
+    // Config: --config, else the shared lookup (./config.toml, then the
+    // per-user config vibe-bridge creates on first run). Registered as an
+    // absolute path, because hooks run with the project as working directory.
+    let config_file = config::find(config_path.as_deref())
+        .map_err(|e| e.to_string())?
+        .map(|p| std::path::absolute(&p).unwrap_or(p));
+    let cfg = config_file.as_deref().and_then(config::read_client);
+    let cfg_has_token = cfg.as_ref().is_some_and(|c| c.token.is_some());
+    let url = url
+        .or_else(|| cfg.as_ref().map(|c| c.url.clone()))
+        .unwrap_or_else(|| "http://localhost:5151".to_string());
+
+    // An explicit --token keeps the env-var scheme (the caller is managing the
+    // token themselves); otherwise the hook reads it from the config file.
+    let token_source = match (&token, &config_file) {
+        (None, Some(path)) if cfg_has_token => TokenSource::Config(path),
+        (Some(_), _) => TokenSource::EnvVar,
+        (None, Some(path)) => {
+            return Err(format!("{} has no token", path.display()));
         }
-        if url.is_none() {
-            url = cfg_url;
+        (None, None) => {
+            return Err(
+                "no hub config found. Start vibe-bridge once (it creates one with a \
+                 random token), or pass --config <config.toml> or --token <TOK>"
+                    .to_string(),
+            );
         }
-    }
-    let url = url.unwrap_or_else(|| "http://localhost:5151".to_string());
-    let token = token
-        .ok_or_else(|| "no token provided (use --token or --config <config.toml>)".to_string())?;
+    };
 
     // ── resolve the vibe_hook exe to register ───────────────────────────────
     let hook_exe = match hook_exe_override {
@@ -277,7 +286,8 @@ fn run() -> Result<(), String> {
     }
 
     // ── merge + write pretty-printed ────────────────────────────────────────
-    let command = build_command(&hook_exe, &url)?;
+    let uses_env_var = matches!(token_source, TokenSource::EnvVar);
+    let command = build_command(&hook_exe, &url, token_source)?;
     let merged = merge_hooks(existing, &command);
     let pretty = serde_json::to_string_pretty(&merged)
         .map_err(|e| format!("serialize merged settings: {e}"))?;
@@ -293,11 +303,19 @@ fn run() -> Result<(), String> {
     println!("  hook exe: {}", hook_exe.display());
     println!("  events  : {}", HOOK_EVENTS.join(", "));
     println!("  command : {command}");
-    println!();
-    println!(
-        "IMPORTANT: Set the VIBE_MONITOR_TOKEN environment variable before running Claude Code:"
-    );
-    println!("  export VIBE_MONITOR_TOKEN='{}'", token);
+    if uses_env_var {
+        println!();
+        println!("This registration reads the token from the environment. Before starting");
+        println!("Claude Code, in the same shell:");
+        println!(
+            "  export VIBE_MONITOR_TOKEN='{}'",
+            token.unwrap_or_default()
+        );
+    } else if let Some(path) = &config_file {
+        println!("  token   : read from {}", path.display());
+        println!();
+        println!("Nothing else to do — restart Claude Code to pick up the hooks.");
+    }
     Ok(())
 }
 
@@ -427,7 +445,12 @@ mod tests {
     #[test]
     fn command_escaping_with_shell_special_chars() {
         // Test that paths and URLs with special chars are properly escaped
-        let cmd = build_command(Path::new("C:\\a b\\vibe_hook.exe"), "http://h:1").unwrap();
+        let cmd = build_command(
+            Path::new("C:\\a b\\vibe_hook.exe"),
+            "http://h:1",
+            TokenSource::EnvVar,
+        )
+        .unwrap();
         // Path with spaces should produce some form of quoting (shlex handles platform-specific escaping)
         // Just verify the path and space are present and the command is structurally sound
         assert!(
@@ -452,6 +475,7 @@ mod tests {
         let cmd = build_command(
             Path::new("/usr/bin/vibe'; rm -rf /"),
             "http://localhost:5151?foo=bar",
+            TokenSource::EnvVar,
         )
         .unwrap();
         // Most important: token must use env var, not be embedded literal
@@ -468,6 +492,41 @@ mod tests {
         assert!(
             path_quoted,
             "injection path should be quoted to prevent execution in: {cmd}"
+        );
+    }
+
+    #[test]
+    fn config_mode_registers_the_config_path_and_no_token_or_env_var() {
+        let cmd = build_command(
+            Path::new("/opt/cydrust/vibe_hook"),
+            "http://127.0.0.1:5151",
+            TokenSource::Config(Path::new("/home/dev/.config/cydrust/config.toml")),
+        )
+        .unwrap();
+        assert_eq!(
+            cmd,
+            "/opt/cydrust/vibe_hook --url http://127.0.0.1:5151 \
+             --config /home/dev/.config/cydrust/config.toml"
+        );
+        assert!(!cmd.contains("--token"));
+        assert!(!cmd.contains("VIBE_MONITOR_TOKEN"));
+    }
+
+    #[test]
+    fn config_mode_quotes_a_config_path_with_spaces_and_metacharacters() {
+        let cmd = build_command(
+            Path::new("/opt/vibe_hook"),
+            "http://h:1",
+            TokenSource::Config(Path::new(
+                "/Users/a b/Application Support/c; rm -rf ~/config.toml",
+            )),
+        )
+        .unwrap();
+        let parts = shlex::split(&cmd).expect("command must stay shell-parseable");
+        assert_eq!(parts.len(), 5, "path must survive as ONE argument: {cmd}");
+        assert_eq!(
+            parts[4],
+            "/Users/a b/Application Support/c; rm -rf ~/config.toml"
         );
     }
 }

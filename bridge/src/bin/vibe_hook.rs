@@ -13,18 +13,21 @@
 /// HARD RULE: a monitoring hook must NEVER break the user's Claude Code session.
 /// We use a short timeout, swallow every error, and always exit 0 quickly.
 ///
-/// Configuration (precedence: VIBE_MONITOR_TOKEN env var > CLI --token flag > VIBE_TOKEN env var > config.toml > defaults):
-///   --url   / VIBE_HUB_URL      base hub url   (default http://localhost:5151)
-///   --token / VIBE_MONITOR_TOKEN auth token    (VIBE_MONITOR_TOKEN recommended for security)
-///   VIBE_TOKEN (deprecated)     legacy token env var
-///   --config <path>             a bridge config.toml to read token/host/port from
+/// Configuration:
+///   token: VIBE_MONITOR_TOKEN > --token > VIBE_TOKEN (legacy) > config file
+///   url:   --url > VIBE_HUB_URL > config file > http://localhost:5151
+///   --config <path>   read token/host/port from this file instead of the
+///                     shared lookup (./config.toml, then the per-user config)
 ///
-/// The recommended approach (install_hooks) sets VIBE_MONITOR_TOKEN in the environment
-/// and passes `--url <base>`; the token is NOT exposed in the command line.
+/// install_hooks registers just `vibe_hook --url <base>`: the token comes from
+/// the config file, so it is neither on the command line nor dependent on an
+/// environment variable being exported in whatever launched Claude Code.
 use std::{
     io::Read,
+    path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use vibe_bridge::config;
 
 const DEFAULT_URL: &str = "http://localhost:5151";
 const HTTP_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -44,29 +47,6 @@ fn project_from_cwd(cwd: &str) -> String {
         return "?".to_string();
     }
     trimmed.rsplit('/').next().unwrap_or("?").to_string()
-}
-
-/// Minimal config.toml reader: pulls token + (host, port) to build a base url.
-/// Best-effort; any failure just yields None so other config sources win.
-fn from_config(path: &str) -> Option<(Option<String>, Option<String>)> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let val: toml::Value = toml::from_str(&text).ok()?;
-    let token = val
-        .get("token")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string());
-    let url = match (
-        val.get("host").and_then(|h| h.as_str()),
-        val.get("port").and_then(|p| p.as_integer()),
-    ) {
-        (Some(host), Some(port)) => {
-            // 0.0.0.0 means "bind all" on the server; from the client side talk to localhost.
-            let host = if host == "0.0.0.0" { "127.0.0.1" } else { host };
-            Some(format!("http://{host}:{port}"))
-        }
-        _ => None,
-    };
-    Some((token, url))
 }
 
 fn main() {
@@ -102,26 +82,32 @@ fn run() {
         }
     }
 
-    // ── resolve config: VIBE_MONITOR_TOKEN > CLI --token > env > config.toml > default ─
-    // Prioritize VIBE_MONITOR_TOKEN (the recommended secure approach) over legacy methods.
-    let token_from_env_secure = std::env::var("VIBE_MONITOR_TOKEN").ok();
-    let token_from_env_legacy = std::env::var("VIBE_TOKEN").ok();
-
-    if let Some(cfg) = config_path.as_deref().and_then(from_config) {
-        let (cfg_token, cfg_url) = cfg;
-        if token.is_none() {
-            token = cfg_token;
-        }
-        if url.is_none() {
-            url = cfg_url;
-        }
-    }
+    // ── resolve token + url ─────────────────────────────────────────────────
+    // token: VIBE_MONITOR_TOKEN > --token > VIBE_TOKEN (legacy) > config file
+    // url:   --url > VIBE_HUB_URL > config file > default
+    // The config file is --config if given, otherwise the shared lookup
+    // (./config.toml, then the per-user config vibe-bridge creates on first
+    // run) — so an installed hook works with no flags and no exported env var.
+    let cfg = match config_path.as_deref() {
+        Some(p) => config::read_client(Path::new(p)),
+        None => config::find(None)
+            .ok()
+            .flatten()
+            .and_then(|p| config::read_client(&p)),
+    };
+    let (cfg_token, cfg_url) = match cfg {
+        Some(c) => (c.token, Some(c.url)),
+        None => (None, None),
+    };
     let url = url
         .or_else(|| std::env::var("VIBE_HUB_URL").ok())
+        .or(cfg_url)
         .unwrap_or_else(|| DEFAULT_URL.to_string());
-    let token = token_from_env_secure
+    let token = std::env::var("VIBE_MONITOR_TOKEN")
+        .ok()
         .or(token)
-        .or(token_from_env_legacy)
+        .or_else(|| std::env::var("VIBE_TOKEN").ok())
+        .or(cfg_token)
         .unwrap_or_default();
 
     // ── read the hook payload Claude Code pipes on stdin ────────────────────

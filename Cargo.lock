@@ -1600,6 +1600,7 @@ dependencies = [
  "chrono",
  "dirs",
  "embedded-graphics",
+ "getrandom 0.2.17",
  "http-body-util",
  "rusqlite",
  "serde",

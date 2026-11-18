@@ -130,9 +130,9 @@ rustup toolchain list | grep esp
 # Clone and enter the workspace
 cd D:\CODEENV\CYDRUST
 
-# Copy the example config and fill in your token
+# Optional: the bridge creates a config with a random token on first run.
+# To manage the file yourself instead, copy the example and set a token:
 copy bridge\config.example.toml bridge\config.toml
-# Edit bridge\config.toml — set token to a random value
 ```
 
 Generate a token:
@@ -247,9 +247,19 @@ cargo fmt -- --check
 |---|---|---|
 | `RUST_LOG` | `info` | Log level filter. Set to `debug` for verbose HTTP tracing. |
 
-The bridge reads its runtime configuration exclusively from the TOML file (path defaulting
-to `config.toml` in the working directory, or from the first CLI argument). There are no
-other required environment variables for the bridge.
+The bridge reads its runtime configuration from one TOML file. All four binaries look for
+it in the same order and use the first that exists:
+
+1. a path passed explicitly (first argument of `vibe-bridge`, `--config` elsewhere) — a
+   path that does not exist is an error
+2. `config.toml` in the working directory
+3. the per-user config: `~/.config/cydrust/config.toml` (Linux),
+   `~/Library/Application Support/cydrust/config.toml` (macOS),
+   `%APPDATA%\cydrust\config.toml` (Windows)
+
+If none exists, `vibe-bridge` creates (3) with a random 256-bit token (owner-only on Unix).
+Set `CYDRUST_CONFIG_DIR` to move the per-user location. `VIBE_MONITOR_TOKEN`, if set, still
+overrides the token from the file for `vibe_hook` and `serial_bridge`.
 
 ### Debug logging
 
