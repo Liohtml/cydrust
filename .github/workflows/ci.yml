@@ -201,7 +201,10 @@ jobs:
     name: Firmware · Build (${{ matrix.name }})
     needs: changes
     if: needs.changes.outputs.firmware == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # Pinned: ESP-IDF v5.3.2 ships a prebuilt esp-clang 16 that links
+    # libxml2.so.2, which ubuntu-26.04 (today's ubuntu-latest) no longer has.
+    # Unpin together with the next ESP-IDF bump.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -379,7 +382,10 @@ jobs:
     name: Firmware · Build (ble, non-blocking)
     needs: changes
     if: needs.changes.outputs.firmware == 'true' || github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # Pinned: ESP-IDF v5.3.2 ships a prebuilt esp-clang 16 that links
+    # libxml2.so.2, which ubuntu-26.04 (today's ubuntu-latest) no longer has.
+    # Unpin together with the next ESP-IDF bump.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: firmware
