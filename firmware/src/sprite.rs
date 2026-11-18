@@ -65,7 +65,7 @@ impl<'a> Sprites<'a> {
             let off = u32le(blob, TABLE_AT + i * 8);
             let len = u32le(blob, TABLE_AT + i * 8 + 4);
             let end = (off as usize).checked_add(len as usize)?;
-            if end > payload.len() || len == 0 || len % 2 != 0 {
+            if end > payload.len() || len == 0 || len & 1 != 0 {
                 return None;
             }
             *slot = (off, len);
