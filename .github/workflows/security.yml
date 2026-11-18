@@ -11,6 +11,17 @@ on:
       - "bridge/deny.toml"
       - "firmware/deny.toml"
       - ".github/workflows/security.yml"
+  # Also on PRs that change dependencies or the audit configuration, so a
+  # lockfile update is audited before it is merged, not after.
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "firmware/Cargo.lock"
+      - "bridge/Cargo.toml"
+      - "firmware/Cargo.toml"
+      - "bridge/deny.toml"
+      - "firmware/deny.toml"
+      - ".github/workflows/security.yml"
   # Weekly on Monday at 02:00 UTC
   schedule:
     - cron: "0 2 * * 1"

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `chrono` is flagged unmaintained (RUSTSEC-2026-0543, informational). Ignored in the audit configuration with a documented reason; migration is tracked in #34
 
 ### Fixed
+- **CI** — The ESP toolchain install passes `GITHUB_TOKEN`, so its GitHub API lookup no longer fails with "rate limit exceeded" when several firmware jobs start together
+- **CI** — Security Audit also runs on pull requests that change a lockfile, a manifest or the audit configuration
 - **CI** — Firmware jobs pinned to `ubuntu-24.04`: ESP-IDF v5.3.2's prebuilt compiler needs `libxml2.so.2`, which `ubuntu-latest` (now 26.04) no longer has, so every firmware build and the firmware release job were failing
 - **Release** — `install_hooks` and `vibe_hook` were never shipped, so a release install could not show the Waiting state (#24)
 - **Release** — The macOS archive was labelled `macos-x86_64` but built on an Apple Silicon runner; archive names now carry rustc's host triple

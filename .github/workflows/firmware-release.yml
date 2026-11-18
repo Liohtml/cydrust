@@ -47,6 +47,11 @@ jobs:
       # for subsequent steps. Pinned to a tagged release of the action.
       - name: Install esp Rust toolchain
         uses: esp-rs/xtensa-toolchain@v1.5
+        # espup asks the GitHub API for the latest Xtensa Rust release. Without
+        # a token that call shares the runner IP's anonymous rate limit and
+        # fails with "rate limit exceeded" when several jobs start at once.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           default: true
           buildtargets: esp32
