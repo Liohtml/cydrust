@@ -174,21 +174,22 @@ The bridge binds on `http://0.0.0.0:5151` by default (configurable). You should 
 ```sh
 cd bridge
 
-# Basic usage — reads token from config.toml
+# Finds the CYD by its USB-serial chip (CH340 or CP2102); token and hub
+# address come from the shared config lookup
+cargo run --bin serial_bridge
+
+# Force a port, e.g. with two ESP32 boards attached
 cargo run --bin serial_bridge -- --port COM7
 
-# Override all defaults
-cargo run --bin serial_bridge -- \
-  --port COM7 \
-  --url http://localhost:5151 \
-  --token your-secret-here \
-  --config config.toml
+# All options
+cargo run --bin serial_bridge -- --help
 ```
 
-Replace `COM7` with the actual port of your ESP32:
-- **Windows:** Check Device Manager → Ports (COM & LPT)
-- **Linux:** Usually `/dev/ttyUSB0` or `/dev/ttyACM0`
-- **macOS:** Usually `/dev/cu.usbserial-*`
+The port is looked up again on every reconnect, so unplugging the device and plugging it
+back in on a different port number needs no restart. To find a port by hand:
+- **Windows:** Device Manager → Ports (COM & LPT)
+- **Linux:** usually `/dev/ttyUSB0`; needs membership of the `dialout` group
+- **macOS:** `/dev/cu.usbserial-*` (not the `/dev/tty.*` twin)
 
 The serial bridge runs in a foreground loop. You will see:
 

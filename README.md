@@ -175,7 +175,7 @@ espflash flash --monitor target/xtensa-esp32-espidf/release/vibe-firmware
 For USB transport, also start the serial relay on the host:
 
 ```bash
-cd bridge && cargo run --bin serial_bridge -- --port /dev/ttyUSB0   # or COM7 on Windows
+cd bridge && cargo run --bin serial_bridge   # finds the CYD's port by itself
 ```
 
 **Running under WSL2?** See [docs/wsl2.md](docs/wsl2.md) for `usbipd` device forwarding

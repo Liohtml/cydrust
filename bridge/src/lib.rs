@@ -8,5 +8,6 @@ pub mod federation;
 pub mod hub;
 pub mod metrics;
 pub mod model;
+pub mod serial_port;
 pub mod state;
 pub mod usage;
