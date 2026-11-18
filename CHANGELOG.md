@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bridge** — `vibe_hook` URL precedence is now `--url` > `VIBE_HUB_URL` > config file (the environment variable used to rank below an explicit `--config`)
 
 ### Security
-- **Bridge** — `rustls` 0.23.40 → 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349), `webpki-roots` 1.0.8 → 1.0.12 (RUSTSEC-2026-0381), `rusqlite` 0.32 → 0.43 with bundled SQLite (RUSTSEC-2026-0459), `rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486, also in the firmware lockfile)
+- **Bridge** — `rustls` 0.23.40 → 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349), `webpki-roots` 1.0.8 → 1.0.12 (RUSTSEC-2026-0381), `rusqlite` 0.32 → 0.43 with bundled SQLite (RUSTSEC-2026-0459), `rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486, also in the firmware lockfile), `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386)
+- `chrono` is flagged unmaintained (RUSTSEC-2026-0543, informational). Ignored in the audit configuration with a documented reason; migration is tracked in #34
 
 ### Fixed
 - **CI** — Firmware jobs pinned to `ubuntu-24.04`: ESP-IDF v5.3.2's prebuilt compiler needs `libxml2.so.2`, which `ubuntu-latest` (now 26.04) no longer has, so every firmware build and the firmware release job were failing
