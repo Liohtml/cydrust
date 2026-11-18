@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Bridge** — Zero-config first run: `vibe-bridge` with no config creates one in the per-user config directory with a random 256-bit token (owner-only on Unix). `serial_bridge`, `install_hooks` and `vibe_hook` find the same file on their own (#25)
-
 - **Bridge** — `serial_bridge` finds the CYD's serial port by USB id (CH340 `1a86:7523`, CP2102 `10c4:ea60`) and re-detects it on every reconnect; `--port` still forces one. Adds `--help` (#26)
 
 ### Changed
