@@ -9,9 +9,9 @@ resolver = "2"
 [workspace.package]
 version = "0.4.0"
 edition = "2021"
-# MSRV verified empirically: 1.82 fails (a dependency requires edition2024),
-# 1.85 fails (dependency rustc floor), 1.86 is the oldest working stable.
-rust-version = "1.86"
+# MSRV is set by rusqlite: 0.41+ (the first releases bundling a SQLite with
+# the RUSTSEC-2026-0459 fix) declare rust-version 1.89.
+rust-version = "1.89"
 authors = ["Lionel Machire <lionel.machire@googlemail.com>"]
 license = "MIT"
 repository = "https://github.com/Liohtml/cydrust"

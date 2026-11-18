@@ -24,6 +24,11 @@ ignore = [
     # transitively (v1 is semver-locked by upstream deps); the app does not
     # rely on the affected code path. Revisit when deps move to thiserror 2.x.
     "RUSTSEC-2026-0190",
+    # chrono is flagged unmaintained (informational, no vulnerability, no
+    # patched release). The bridge uses it for local-time arithmetic; the
+    # firmware only gets it through the build-time proc macro. Migration to
+    # jiff is tracked in #34 — remove this entry there.
+    "RUSTSEC-2026-0543",
 ]
 
 [bans]

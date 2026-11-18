@@ -46,7 +46,7 @@ getrandom = "0.2"
 serialport = "4"
 ureq = "2"
 # hub: read OpenCode/Hermes SQLite databases (read-only)
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -30,7 +30,10 @@ defaults:
 jobs:
   build-firmware-bins:
     name: Build & package firmware images
-    runs-on: ubuntu-latest
+    # Pinned: ESP-IDF v5.3.2 ships a prebuilt esp-clang 16 that links
+    # libxml2.so.2, which ubuntu-26.04 (today's ubuntu-latest) no longer has.
+    # Unpin together with the next ESP-IDF bump.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository (with submodules)
@@ -44,6 +47,11 @@ jobs:
       # for subsequent steps. Pinned to a tagged release of the action.
       - name: Install esp Rust toolchain
         uses: esp-rs/xtensa-toolchain@v1.5
+        # espup asks the GitHub API for the latest Xtensa Rust release. Without
+        # a token that call shares the runner IP's anonymous rate limit and
+        # fails with "rate limit exceeded" when several jobs start at once.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           default: true
           buildtargets: esp32

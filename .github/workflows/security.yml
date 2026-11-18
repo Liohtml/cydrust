@@ -11,6 +11,17 @@ on:
       - "bridge/deny.toml"
       - "firmware/deny.toml"
       - ".github/workflows/security.yml"
+  # Also on PRs that change dependencies or the audit configuration, so a
+  # lockfile update is audited before it is merged, not after.
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "firmware/Cargo.lock"
+      - "bridge/Cargo.toml"
+      - "firmware/Cargo.toml"
+      - "bridge/deny.toml"
+      - "firmware/deny.toml"
+      - ".github/workflows/security.yml"
   # Weekly on Monday at 02:00 UTC
   schedule:
     - cron: "0 2 * * 1"
@@ -65,16 +76,20 @@ jobs:
           # RUSTSEC-2026-0190: thiserror 1.0.69 downcast_mut unsoundness — pulled
           # in transitively (v1 is semver-locked by upstream deps) in both
           # workspaces; not on an exercised code path. See deny.toml.
+          # RUSTSEC-2026-0543: chrono flagged unmaintained (informational, no
+          # vulnerability). Migration to jiff is tracked in #34.
           if [ "${{ matrix.workspace }}" = "firmware" ]; then
             # atomic-polyfill (RUSTSEC-2023-0089) and proc-macro-error2 (RUSTSEC-2026-0173)
             # are unmaintained but locked to the ESP-IDF toolchain ecosystem; we cannot update them.
             cargo audit --deny warnings \
               --ignore RUSTSEC-2023-0089 \
               --ignore RUSTSEC-2026-0173 \
-              --ignore RUSTSEC-2026-0190
+              --ignore RUSTSEC-2026-0190 \
+              --ignore RUSTSEC-2026-0543
           else
             cargo audit --deny warnings \
-              --ignore RUSTSEC-2026-0190
+              --ignore RUSTSEC-2026-0190 \
+              --ignore RUSTSEC-2026-0543
           fi
 
   # ── cargo-deny (licenses + advisories + duplicates) ───────────────────────

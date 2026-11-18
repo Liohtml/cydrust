@@ -12,12 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bridge** — `serial_bridge` finds the CYD's serial port by USB id (CH340 `1a86:7523`, CP2102 `10c4:ea60`) and re-detects it on every reconnect; `--port` still forces one. Adds `--help` (#26)
 
 ### Changed
+- Minimum supported Rust version is now 1.89 (required by `rusqlite` 0.41+)
 - **Release** — One archive per platform, `cydrust-<version>-<host-triple>`, containing all four host binaries plus `README.txt`, the example config and the licence. Replaces the separate `vibe-bridge-*` and `serial-bridge-*` archives (#24)
 - README Quick Start leads with the release download; building from source is the second path
 - **Bridge** — `install_hooks` needs no arguments and registers `vibe_hook --url … --config <path>`; the hook reads the token from the config file, so `VIBE_MONITOR_TOKEN` no longer has to be exported in the shell that starts Claude Code. Passing `--token` keeps the previous environment-variable registration
 - **Bridge** — `vibe_hook` URL precedence is now `--url` > `VIBE_HUB_URL` > config file (the environment variable used to rank below an explicit `--config`)
 
+### Security
+- **Bridge** — `rustls` 0.23.40 → 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349), `webpki-roots` 1.0.8 → 1.0.12 (RUSTSEC-2026-0381), `rusqlite` 0.32 → 0.43 with bundled SQLite (RUSTSEC-2026-0459), `rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486, also in the firmware lockfile), `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386)
+- `chrono` is flagged unmaintained (RUSTSEC-2026-0543, informational). Ignored in the audit configuration with a documented reason; migration is tracked in #34
+
 ### Fixed
+- **CI** — The ESP toolchain install passes `GITHUB_TOKEN`, so its GitHub API lookup no longer fails with "rate limit exceeded" when several firmware jobs start together
+- **CI** — Security Audit also runs on pull requests that change a lockfile, a manifest or the audit configuration
+- **CI** — Firmware jobs pinned to `ubuntu-24.04`: ESP-IDF v5.3.2's prebuilt compiler needs `libxml2.so.2`, which `ubuntu-latest` (now 26.04) no longer has, so every firmware build and the firmware release job were failing
 - **Release** — `install_hooks` and `vibe_hook` were never shipped, so a release install could not show the Waiting state (#24)
 - **Release** — The macOS archive was labelled `macos-x86_64` but built on an Apple Silicon runner; archive names now carry rustc's host triple
 - **Bridge** — `serial_bridge --port` without a value panicked with an index out of bounds, and unknown flags were silently ignored (a typo fell back to `COM7`); both now print an error and usage and exit 2
