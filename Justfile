@@ -11,13 +11,15 @@ default:
 build-bridge:
     cd bridge && cargo build --release
 
-# Run bridge with config
-run-bridge config="bridge/config.toml":
+# Run bridge. Config is found automatically (created on first run); pass a
+# path — absolute, or relative to bridge/ — to use a specific file.
+run-bridge config="":
     cd bridge && cargo run --release --bin vibe-bridge -- {{config}}
 
-# Run serial bridge (USB transport)
-run-serial port="COM7" config="bridge/config.toml":
-    cd bridge && cargo run --release --bin serial_bridge -- --port {{port}} --config {{config}}
+# Run serial bridge (USB transport). The CYD's port is auto-detected;
+# `just run-serial COM7` forces one.
+run-serial port="" config="":
+    cd bridge && cargo run --release --bin serial_bridge -- {{ if port != "" { "--port " + port } else { "" } }} {{ if config != "" { "--config " + config } else { "" } }}
 
 # Run bridge tests
 test:

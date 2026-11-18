@@ -7,13 +7,14 @@
 /// ACK lines sent back by the CYD (`{"ack":"<id>"}`) are forwarded via POST /ack
 /// to the bridge so sessions clear their "waiting" state.
 ///
-/// Token is resolved with precedence: VIBE_MONITOR_TOKEN > config.toml > CLI --token
-/// Env vars are preferred for security to avoid exposing tokens in process arguments.
+/// The port is found automatically by USB id (CH340 / CP2102) and re-detected
+/// on every reconnect, so a replug onto a different port number is picked up.
+/// Token and hub address come from the shared config lookup.
 ///
 /// Usage:
-///   cargo run --bin serial_bridge -- --port COM7
-///   cargo run --bin serial_bridge -- --port COM7 --url http://localhost:5151
-///   # Token from VIBE_MONITOR_TOKEN env var or config.toml
+///   serial_bridge                       # auto-detect the CYD
+///   serial_bridge --port /dev/ttyUSB1   # force a specific port
+///   serial_bridge --help
 use std::{
     io::{Read, Write},
     thread,
@@ -23,7 +24,10 @@ use std::{
 use anyhow::{Context, Result};
 use serde_json::Value;
 use serialport::SerialPort;
-use vibe_bridge::config;
+use vibe_bridge::{
+    config,
+    serial_port::{self, Detection},
+};
 
 const POLL_SECS: u64 = 2;
 const BAUD: u32 = 115_200;
@@ -50,22 +54,89 @@ fn post_ack(url: &str, token: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Open COM port with the CYD-safe DTR/RTS handling (lowered so opening the
-/// port doesn't reset the ESP32). Returns None if the device isn't present.
-fn open_port(port_name: &str) -> Option<Box<dyn SerialPort>> {
-    match serialport::new(port_name, BAUD)
+/// Open the port with the CYD-safe DTR/RTS handling (lowered so opening the
+/// port doesn't reset the ESP32).
+fn open_port(port_name: &str) -> serialport::Result<Box<dyn SerialPort>> {
+    let mut p = serialport::new(port_name, BAUD)
         .timeout(Duration::from_millis(100))
         .data_bits(serialport::DataBits::Eight)
         .parity(serialport::Parity::None)
         .stop_bits(serialport::StopBits::One)
-        .open()
-    {
-        Ok(mut p) => {
-            let _ = p.write_data_terminal_ready(false);
-            let _ = p.write_request_to_send(false);
-            Some(p)
+        .open()?;
+    let _ = p.write_data_terminal_ready(false);
+    let _ = p.write_request_to_send(false);
+    Ok(p)
+}
+
+/// Turn a failed open into something the user can act on. `os` is
+/// `std::env::consts::OS`, passed in so every branch is testable anywhere.
+fn describe_open_error(port: &str, kind: &serialport::ErrorKind, os: &str) -> String {
+    use serialport::ErrorKind;
+    match kind {
+        ErrorKind::Io(std::io::ErrorKind::PermissionDenied) if os == "linux" => format!(
+            "{port}: permission denied. Add yourself to the dialout group, then log out \
+             and back in (under WSL: `wsl --shutdown`):\n    sudo usermod -aG dialout $USER"
+        ),
+        ErrorKind::Io(std::io::ErrorKind::PermissionDenied) => format!(
+            "{port}: access denied — another program has the port open \
+             (a serial monitor or a second serial_bridge?)"
+        ),
+        ErrorKind::NoDevice | ErrorKind::Io(std::io::ErrorKind::NotFound) => {
+            format!("{port}: not present (unplugged?)")
         }
-        Err(_) => None,
+        other => format!("{port}: cannot open ({other:?})"),
+    }
+}
+
+const USAGE: &str = "\
+Usage: serial_bridge [--port PORT] [--url URL] [--config FILE] [--token TOKEN]
+
+Relays session state from the hub to a CYD over USB serial.
+
+  --port PORT     serial port to use (default: auto-detect the CYD by USB id)
+  --url URL       hub base url (default: from the config, else http://localhost:5151)
+  --config FILE   hub config to read token and address from
+                  (default: ./config.toml, then the per-user config)
+  --token TOKEN   hub token, if there is no config file on this machine
+  -h, --help      show this help
+
+The VIBE_MONITOR_TOKEN environment variable overrides the token from the config.";
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Args {
+    port: Option<String>,
+    url: Option<String>,
+    token: Option<String>,
+    config: Option<String>,
+    help: bool,
+}
+
+fn parse_args(args: &[String]) -> Result<Args, String> {
+    let mut out = Args::default();
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let mut value = || match it.next() {
+            Some(v) if !v.starts_with("--") => Ok(v.clone()),
+            _ => Err(format!("{flag} needs a value")),
+        };
+        match flag.as_str() {
+            "--port" => out.port = Some(value()?),
+            "--url" => out.url = Some(value()?),
+            "--token" => out.token = Some(value()?),
+            "--config" => out.config = Some(value()?),
+            "-h" | "--help" => out.help = true,
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(out)
+}
+
+/// Print a status line only when it differs from the last one, so waiting for
+/// a device does not scroll the same message every two seconds.
+fn report(last: &mut String, msg: String) {
+    if *last != msg {
+        eprintln!("[serial_bridge] {msg}");
+        *last = msg;
     }
 }
 
@@ -85,74 +156,109 @@ fn extract_ack_id(s: &str) -> Option<&str> {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let mut port_name = "COM7".to_string();
-    let mut bridge_url = "http://localhost:5151".to_string();
-    let mut token: Option<String> = None;
-    let mut config_path: Option<String> = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--port" => {
-                i += 1;
-                port_name = args[i].clone();
-            }
-            "--url" => {
-                i += 1;
-                bridge_url = args[i].clone();
-            }
-            "--token" => {
-                i += 1;
-                token = Some(args[i].clone());
-            }
-            "--config" => {
-                i += 1;
-                config_path = Some(args[i].clone());
-            }
-            _ => {}
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let args = match parse_args(&raw) {
+        Ok(a) if a.help => {
+            println!("{USAGE}");
+            return Ok(());
         }
-        i += 1;
-    }
-
-    // token: VIBE_MONITOR_TOKEN > config file > --token
-    // The config file is --config if given, otherwise the shared lookup
-    // (./config.toml, then the per-user config vibe-bridge creates on first run).
-    let token = match std::env::var("VIBE_MONITOR_TOKEN") {
-        Ok(env_token) => env_token,
-        Err(_) => {
-            let found = match config::find(config_path.as_deref()) {
-                Ok(found) => found,
-                // An explicit --config that does not exist is only fatal when
-                // there is no --token to fall back on.
-                Err(_) if token.is_some() => None,
-                Err(e) => return Err(e),
-            };
-            found
-                .as_deref()
-                .and_then(config::read_client)
-                .and_then(|c| c.token)
-                .or(token)
-                .context(
-                    "no hub token found: start vibe-bridge once (it creates the config), \
-                     or pass --config <path>, --token, or set VIBE_MONITOR_TOKEN",
-                )?
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("serial_bridge: {e}\n\n{USAGE}");
+            std::process::exit(2);
         }
     };
 
-    println!("[serial_bridge] {port_name} @ {BAUD}, bridge {bridge_url}");
+    // The config file is --config if given, otherwise the shared lookup
+    // (./config.toml, then the per-user config vibe-bridge creates on first run).
+    let client = match config::find(args.config.as_deref()) {
+        Ok(found) => found.as_deref().and_then(config::read_client),
+        // An explicit --config that does not exist is only fatal when there
+        // is no other token source to fall back on.
+        Err(_) if args.token.is_some() || std::env::var("VIBE_MONITOR_TOKEN").is_ok() => None,
+        Err(e) => return Err(e),
+    };
+
+    // token: VIBE_MONITOR_TOKEN > config file > --token
+    let token = std::env::var("VIBE_MONITOR_TOKEN")
+        .ok()
+        .or_else(|| client.as_ref().and_then(|c| c.token.clone()))
+        .or(args.token.clone())
+        .context(
+            "no hub token found: start vibe-bridge once (it creates the config), \
+             or pass --config <path>, --token, or set VIBE_MONITOR_TOKEN",
+        )?;
+    // url: --url > config file > default
+    let bridge_url = args
+        .url
+        .clone()
+        .or_else(|| client.as_ref().map(|c| c.url.clone()))
+        .unwrap_or_else(|| "http://localhost:5151".to_string());
+
+    match &args.port {
+        Some(p) => println!("[serial_bridge] {p} @ {BAUD}, bridge {bridge_url}"),
+        None => println!("[serial_bridge] auto-detecting the CYD @ {BAUD}, bridge {bridge_url}"),
+    }
 
     // Reconnect loop: survives the device being unplugged/replugged. On any
-    // port I/O error we drop the handle and re-open COM port until it returns.
+    // port I/O error we drop the handle and look for the device again — by USB
+    // id unless --port pinned a name, so a renumbered port is found too.
     let mut rx: Vec<u8> = Vec::new();
+    let mut status = String::new();
     'reconnect: loop {
+        let port_name = match &args.port {
+            Some(p) => p.clone(),
+            None => match serial_port::detect() {
+                Detection::Found {
+                    port,
+                    chip,
+                    also_matching,
+                } => {
+                    if !also_matching.is_empty() {
+                        report(
+                            &mut status,
+                            format!(
+                                "several candidate devices; using {port} ({chip}). \
+                                 Others: {}. Use --port to choose.",
+                                also_matching.join(", ")
+                            ),
+                        );
+                    }
+                    port
+                }
+                Detection::NotFound { seen } => {
+                    let seen = if seen.is_empty() {
+                        "none".to_string()
+                    } else {
+                        seen.join(", ")
+                    };
+                    report(
+                        &mut status,
+                        format!(
+                            "no CYD found (looking for a CH340 or CP2102 USB-serial device). \
+                             Serial ports present: {seen}. Is it plugged in? \
+                             Use --port to force a port. Waiting..."
+                        ),
+                    );
+                    thread::sleep(Duration::from_secs(2));
+                    continue 'reconnect;
+                }
+            },
+        };
         let mut port = match open_port(&port_name) {
-            Some(p) => {
+            Ok(p) => {
                 println!("[serial_bridge] connected to {port_name}");
+                status.clear();
                 p
             }
-            None => {
-                eprintln!("[serial_bridge] {port_name} unavailable; retrying in 2s...");
+            Err(e) => {
+                report(
+                    &mut status,
+                    format!(
+                        "{} Retrying...",
+                        describe_open_error(&port_name, &e.kind, std::env::consts::OS)
+                    ),
+                );
                 thread::sleep(Duration::from_secs(2));
                 continue 'reconnect;
             }
@@ -407,6 +513,88 @@ mod tests {
     fn f(v: &Value, k: &str) -> f64 {
         v[k].as_f64()
             .unwrap_or_else(|| panic!("key {k} missing or not a number"))
+    }
+
+    // ── parse_args ────────────────────────────────────────────────────────
+    fn argv(s: &[&str]) -> Vec<String> {
+        s.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn no_arguments_means_auto_detect_everything() {
+        assert_eq!(parse_args(&[]), Ok(Args::default()));
+    }
+
+    #[test]
+    fn all_flags_are_parsed() {
+        let a = parse_args(&argv(&[
+            "--port",
+            "COM9",
+            "--url",
+            "http://h:1",
+            "--config",
+            "c.toml",
+            "--token",
+            "t",
+        ]))
+        .unwrap();
+        assert_eq!(a.port.as_deref(), Some("COM9"));
+        assert_eq!(a.url.as_deref(), Some("http://h:1"));
+        assert_eq!(a.config.as_deref(), Some("c.toml"));
+        assert_eq!(a.token.as_deref(), Some("t"));
+        assert!(!a.help);
+    }
+
+    #[test]
+    fn a_flag_without_its_value_is_an_error_not_a_panic() {
+        // Used to index past the end of argv.
+        assert_eq!(
+            parse_args(&argv(&["--port"])),
+            Err("--port needs a value".to_string())
+        );
+        // The next flag is not a value.
+        assert_eq!(
+            parse_args(&argv(&["--port", "--url", "http://h:1"])),
+            Err("--port needs a value".to_string())
+        );
+    }
+
+    #[test]
+    fn an_unknown_flag_is_an_error_not_silently_ignored() {
+        // A typo used to fall through to the COM7 default without a word.
+        assert_eq!(
+            parse_args(&argv(&["--prot", "/dev/ttyUSB0"])),
+            Err("unknown argument: --prot".to_string())
+        );
+    }
+
+    #[test]
+    fn help_flags_are_recognised() {
+        assert!(parse_args(&argv(&["--help"])).unwrap().help);
+        assert!(parse_args(&argv(&["-h"])).unwrap().help);
+    }
+
+    // ── describe_open_error ───────────────────────────────────────────────
+    #[test]
+    fn permission_denied_on_linux_names_the_dialout_fix() {
+        let kind = serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied);
+        let msg = describe_open_error("/dev/ttyUSB0", &kind, "linux");
+        assert!(msg.contains("dialout"), "{msg}");
+        assert!(msg.contains("usermod -aG dialout"), "{msg}");
+    }
+
+    #[test]
+    fn permission_denied_elsewhere_means_the_port_is_in_use() {
+        let kind = serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied);
+        let msg = describe_open_error("COM4", &kind, "windows");
+        assert!(msg.contains("another program"), "{msg}");
+        assert!(!msg.contains("dialout"), "{msg}");
+    }
+
+    #[test]
+    fn a_missing_device_is_reported_as_unplugged() {
+        let msg = describe_open_error("COM4", &serialport::ErrorKind::NoDevice, "windows");
+        assert!(msg.contains("not present"), "{msg}");
     }
 
     // ── extract_ack_id ────────────────────────────────────────────────────
